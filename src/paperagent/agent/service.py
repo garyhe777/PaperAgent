@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from pathlib import Path
 from typing import Annotated, Any, Iterator, TypedDict
 from uuid import uuid4
 
@@ -61,7 +62,7 @@ class PaperChatAgent:
         self.paper_catalog_service = paper_catalog_service
         self.ppt_service = ppt_service
         self.prompt_loader = PromptLoader()
-        self.max_tool_iterations = 4
+        self.max_tool_iterations = settings.agent_max_tool_iterations
         self.tools = self._build_tools()
         self.graph = self._build_graph()
 
@@ -215,6 +216,11 @@ class PaperChatAgent:
             """Return the cached abstract summary and keywords for one indexed paper."""
             return "This tool is executed by the LangGraph tools node."
 
+        @tool
+        def get_paper_markdown(paper_id: str) -> str:
+            """Return the stored full markdown text for one indexed paper."""
+            return "This tool is executed by the LangGraph tools node."
+
         @tool(args_schema=GeneratePPTInput)
         def generate_ppt(
             paper_id: str,
@@ -225,7 +231,7 @@ class PaperChatAgent:
             """Render a structured PPT deck for one indexed paper."""
             return "This tool is executed by the LangGraph tools node."
 
-        return [search_paper_context, search_papers, get_paper_profile, generate_ppt]
+        return [search_paper_context, search_papers, get_paper_profile, get_paper_markdown, generate_ppt]
 
     def _agent_step(self, state: AgentState) -> AgentState:
         messages = state["messages"]
@@ -264,6 +270,21 @@ class PaperChatAgent:
         for tool_call in last_message.tool_calls:
             tool_name = str(tool_call["name"])
             if tool_name == "search_paper_context":
+                if state.get("ppt_intent"):
+                    tool_messages.append(
+                        ToolMessage(
+                            content=json.dumps(
+                                {
+                                    "tool_name": "search_paper_context",
+                                    "error": "PPT generation must read the full paper markdown instead of retrieval. Use get_paper_markdown.",
+                                    "results": [],
+                                },
+                                ensure_ascii=False,
+                            ),
+                            tool_call_id=str(tool_call["id"]),
+                        )
+                    )
+                    continue
                 query = str(tool_call.get("args", {}).get("query", ""))
                 requested_paper_id = tool_call.get("args", {}).get("paper_id") or state.get("paper_id")
                 content, retrievals = self._search_paper_context(
@@ -294,6 +315,17 @@ class PaperChatAgent:
             if tool_name == "get_paper_profile":
                 requested_paper_id = str(tool_call.get("args", {}).get("paper_id", "")).strip()
                 content = self._get_paper_profile(requested_paper_id)
+                tool_messages.append(
+                    ToolMessage(
+                        content=content,
+                        tool_call_id=str(tool_call["id"]),
+                    )
+                )
+                continue
+
+            if tool_name == "get_paper_markdown":
+                requested_paper_id = str(tool_call.get("args", {}).get("paper_id", "")).strip()
+                content = self._get_paper_markdown(requested_paper_id)
                 tool_messages.append(
                     ToolMessage(
                         content=content,
@@ -434,9 +466,8 @@ class PaperChatAgent:
                     content="",
                     tool_calls=[
                         {
-                            "name": "search_paper_context",
+                            "name": "get_paper_markdown",
                             "args": {
-                                "query": "Summarize the paper problem, method, experiments, and conclusion for a PPT deck.",
                                 "paper_id": target_paper_id,
                             },
                             "id": f"call_{uuid4().hex[:8]}",
@@ -546,6 +577,20 @@ class PaperChatAgent:
             if tool_name == "search_papers":
                 papers = payload.get("results", [])
                 if len(papers) == 1:
+                    if state.get("ppt_intent"):
+                        return AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "get_paper_markdown",
+                                    "args": {
+                                        "paper_id": papers[0]["paper_id"],
+                                    },
+                                    "id": f"call_{uuid4().hex[:8]}",
+                                    "type": "tool_call",
+                                }
+                            ],
+                        )
                     original_question = ""
                     for message in reversed(state["messages"]):
                         if isinstance(message, HumanMessage):
@@ -578,12 +623,11 @@ class PaperChatAgent:
                         )
                     )
 
-            retrievals = self._extract_retrieval_results([last_message])
-            if state.get("ppt_intent") and state.get("ppt_target_paper_id"):
-                deck_content = self._build_mock_ppt_deck(
+            if tool_name == "get_paper_markdown" and state.get("ppt_intent") and state.get("ppt_target_paper_id"):
+                deck_content = self._build_mock_ppt_deck_from_markdown(
                     paper_id=str(state["ppt_target_paper_id"]),
                     paper_title=state.get("ppt_target_paper_title") or "Paper Deck",
-                    retrievals=retrievals,
+                    markdown_text=str(payload.get("markdown_text", "")),
                     audience=state.get("style", "beginner"),
                 )
                 return AIMessage(
@@ -596,6 +640,15 @@ class PaperChatAgent:
                             "type": "tool_call",
                         }
                     ],
+                )
+
+            retrievals = self._extract_retrieval_results([last_message])
+            if state.get("ppt_intent") and state.get("ppt_target_paper_id"):
+                return AIMessage(
+                    content=(
+                        "PPT generation should use the full paper markdown instead of retrieval results. "
+                        "Please call get_paper_markdown for the target paper."
+                    )
                 )
             if retrievals:
                 bullet_lines = [
@@ -699,6 +752,40 @@ class PaperChatAgent:
         }
         return json.dumps(payload, ensure_ascii=False)
 
+    def _get_paper_markdown(self, paper_id: str) -> str:
+        paper = self.paper_repository.get_paper(paper_id)
+        if not paper:
+            return json.dumps(
+                {
+                    "tool_name": "get_paper_markdown",
+                    "paper_id": paper_id,
+                    "error": f"Paper {paper_id} not found.",
+                },
+                ensure_ascii=False,
+            )
+
+        markdown_path = Path(paper.md_path)
+        if not markdown_path.exists():
+            return json.dumps(
+                {
+                    "tool_name": "get_paper_markdown",
+                    "paper_id": paper_id,
+                    "title": paper.title,
+                    "error": f"Markdown file not found: {markdown_path}",
+                },
+                ensure_ascii=False,
+            )
+
+        return json.dumps(
+            {
+                "tool_name": "get_paper_markdown",
+                "paper_id": paper_id,
+                "title": paper.title,
+                "markdown_text": markdown_path.read_text(encoding="utf-8"),
+            },
+            ensure_ascii=False,
+        )
+
     def _generate_ppt(self, raw_args: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
         if not self.ppt_service:
             payload = {
@@ -771,21 +858,29 @@ class PaperChatAgent:
             ],
         }
 
-    def _build_mock_ppt_deck(
+    def _build_mock_ppt_deck_from_markdown(
         self,
         paper_id: str,
         paper_title: str,
-        retrievals: list[RetrievalResult],
+        markdown_text: str,
         audience: str,
     ) -> DeckContent:
-        bullets_from_retrievals = [
-            item.content.replace("\n", " ").strip()[:120]
-            for item in retrievals[:4]
-            if item.content.strip()
+        candidate_lines = [
+            line.strip().lstrip("#").strip()
+            for line in markdown_text.splitlines()
+            if line.strip() and not line.strip().startswith("<!--")
         ]
-        citations = [item.chunk_id for item in retrievals[:4]]
-        if not bullets_from_retrievals:
-            bullets_from_retrievals = [
+        bullets_from_markdown: list[str] = []
+        for line in candidate_lines:
+            normalized = " ".join(line.split())
+            if len(normalized) < 20:
+                continue
+            if normalized not in bullets_from_markdown:
+                bullets_from_markdown.append(normalized[:120])
+            if len(bullets_from_markdown) >= 5:
+                break
+        if not bullets_from_markdown:
+            bullets_from_markdown = [
                 "Explain the paper problem and motivation.",
                 "Summarize the method at a beginner-friendly level.",
             ]
@@ -803,27 +898,27 @@ class PaperChatAgent:
             SlideContent(
                 slide_type="background",
                 title="Problem & Motivation",
-                bullets=bullets_from_retrievals[:2],
+                bullets=bullets_from_markdown[:2],
                 notes="Explain why this paper matters.",
-                citations=citations[:2],
+                citations=[],
                 layout_hint="content",
                 visual_intent="problem framing",
             ),
             SlideContent(
                 slide_type="method",
                 title="Core Method",
-                bullets=bullets_from_retrievals[:3],
+                bullets=bullets_from_markdown[:3],
                 notes="Walk through the main pipeline.",
-                citations=citations[:3],
+                citations=[],
                 layout_hint="content",
                 visual_intent="method summary",
             ),
             SlideContent(
                 slide_type="experiments",
                 title="Experiments & Results",
-                bullets=(bullets_from_retrievals[1:4] or bullets_from_retrievals[:2]),
+                bullets=(bullets_from_markdown[1:4] or bullets_from_markdown[:2]),
                 notes="Highlight the most important evidence.",
-                citations=citations[:3],
+                citations=[],
                 layout_hint="content",
                 visual_intent="results summary",
             ),
@@ -835,7 +930,7 @@ class PaperChatAgent:
                     "Mention one limitation or next step.",
                 ],
                 notes="Close with a balanced summary.",
-                citations=citations[:1],
+                citations=[],
                 layout_hint="content",
                 visual_intent="closing summary",
             ),

@@ -9,9 +9,10 @@ When to use it:
 
 How to work:
 1. Use the target paper above unless the user explicitly asked for a cross-paper deck.
-2. Call `get_paper_profile` and/or `search_paper_context` if you need evidence before building slides.
+2. Read the full paper with `get_paper_markdown` before building slides.
 3. Once you have enough evidence, call `generate_ppt`.
 4. Do not write the whole PPT as plain text instead of calling the tool.
+5. Do not use `search_paper_context` for PPT generation.
 
 `generate_ppt` arguments:
 - `paper_id`: target paper id, required

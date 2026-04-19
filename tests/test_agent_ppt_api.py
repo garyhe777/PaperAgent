@@ -187,7 +187,8 @@ def test_scoped_chat_can_generate_ppt(container: ServiceContainer, sample_pdf: P
     )
     tool_names = [event.payload.get("tool_name") for event in events if event.event_type == "tool_called"]
     ppt_event = next(event for event in events if event.event_type == "ppt_generated")
-    assert "search_paper_context" in tool_names
+    assert "get_paper_markdown" in tool_names
+    assert "search_paper_context" not in tool_names
     assert "generate_ppt" in tool_names
     assert Path(str(ppt_event.payload["ppt_path"])).exists()
     assert Path(str(ppt_event.payload["content_path"])).exists()
@@ -224,7 +225,8 @@ def test_general_chat_can_generate_ppt_from_top_catalog_hit(container: ServiceCo
     )
     tool_names = [event.payload.get("tool_name") for event in events if event.event_type == "tool_called"]
     ppt_event = next(event for event in events if event.event_type == "ppt_generated")
-    assert "search_paper_context" in tool_names
+    assert "get_paper_markdown" in tool_names
+    assert "search_paper_context" not in tool_names
     assert "generate_ppt" in tool_names
     assert ppt_event.payload["paper_id"] == "roar"
 
