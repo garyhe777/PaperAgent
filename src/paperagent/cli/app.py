@@ -55,7 +55,7 @@ def ingest(
 
 @chat_app.command("ask")
 def chat_ask(
-    paper_id: str = typer.Option(..., help="Paper identifier"),
+    paper_id: str | None = typer.Option(None, help="Optional paper identifier"),
     question: str = typer.Option(..., help="Question to ask"),
     style: str = typer.Option("beginner", help="Answer style"),
 ) -> None:
@@ -66,11 +66,14 @@ def chat_ask(
 
 @chat_app.command("interactive")
 def chat_interactive(
-    paper_id: str = typer.Option(..., help="Paper identifier"),
+    paper_id: str | None = typer.Option(None, help="Optional paper identifier"),
     style: str = typer.Option("beginner", help="Answer style"),
 ) -> None:
     container = get_container()
-    console.print(f"[bold green]Start chatting with paper {paper_id}[/bold green]")
+    if paper_id:
+        console.print(f"[bold green]Start chatting with paper {paper_id}[/bold green]")
+    else:
+        console.print("[bold green]Start general chat. The agent may search the paper database if needed.[/bold green]")
     while True:
         question = typer.prompt("question", prompt_suffix=" > ")
         if question.strip().lower() in {"exit", "quit"}:

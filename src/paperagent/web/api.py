@@ -17,7 +17,7 @@ class IngestRequest(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    paper_id: str
+    paper_id: str | None = None
     question: str
     style: str = "beginner"
 

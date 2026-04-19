@@ -26,6 +26,34 @@ def test_chat_agent_streams_answer(container: ServiceContainer, sample_pdf: Path
     assert "final_answer_done" in event_types
 
 
+def test_general_chat_skips_retrieval_for_greeting(container: ServiceContainer):
+    events = list(
+        container.chat_agent.ask(
+            paper_id=None,
+            question="hello",
+            style="beginner",
+        )
+    )
+    event_types = [event.event_type for event in events]
+    assert "agent_started" in event_types
+    assert "rag_hit" not in event_types
+    assert "final_answer_done" in event_types
+
+
+def test_general_chat_can_search_database_when_needed(container: ServiceContainer, sample_pdf: Path):
+    result = container.ingest_service.ingest(pdf_path=sample_pdf)
+    events = list(
+        container.chat_agent.ask(
+            paper_id=None,
+            question="Explain the method in the indexed papers",
+            style="beginner",
+        )
+    )
+    event_types = [event.event_type for event in events]
+    assert result["paper_id"]
+    assert "rag_hit" in event_types
+
+
 def test_ppt_generation_creates_files(container: ServiceContainer, sample_pdf: Path):
     result = container.ingest_service.ingest(pdf_path=sample_pdf)
     deck = container.ppt_service.generate(result["paper_id"])

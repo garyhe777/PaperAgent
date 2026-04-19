@@ -13,10 +13,11 @@ from paperagent.storage.repositories import PaperRepository
 
 
 class AgentState(TypedDict, total=False):
-    paper_id: str
+    paper_id: str | None
     paper_title: str
     question: str
     style: str
+    chat_mode: str
     should_search: bool
     search_query: str
     evidence: list[RetrievalResult]
@@ -30,21 +31,24 @@ class PaperChatAgent:
         self.retrieval_service = retrieval_service
         self.graph = self._build_graph()
 
-    def ask(self, paper_id: str, question: str, style: str = "beginner") -> Iterator[AgentEvent]:
-        paper = self.paper_repository.get_paper(paper_id)
-        if not paper:
+    def ask(self, paper_id: str | None, question: str, style: str = "beginner") -> Iterator[AgentEvent]:
+        paper = self.paper_repository.get_paper(paper_id) if paper_id else None
+        if paper_id and not paper:
             yield AgentEvent("error", f"Paper {paper_id} not found.")
             return
 
-        yield AgentEvent("agent_started", f"Preparing answer for {paper.title}")
+        chat_mode = "paper" if paper else "general"
+        title = paper.title if paper else "general chat"
+        yield AgentEvent("agent_started", f"Preparing answer for {title}")
         state: AgentState = {
             "paper_id": paper_id,
-            "paper_title": paper.title,
+            "paper_title": paper.title if paper else "General knowledge and indexed paper database",
             "question": question,
             "style": style,
+            "chat_mode": chat_mode,
         }
         result = self.graph.invoke(state)
-        if result.get("should_search"):
+        if result.get("should_search") and result.get("evidence"):
             evidence = result.get("evidence", [])
             yield AgentEvent(
                 "rag_hit",
@@ -80,6 +84,10 @@ class PaperChatAgent:
 
     def _decide(self, state: AgentState) -> AgentState:
         if self.settings.llm_backend == "mock":
+            greetings = {"hello", "hi", "hey", "你好", "您好"}
+            normalized = state["question"].strip().lower()
+            if normalized in greetings:
+                return {"should_search": False, "search_query": state["question"]}
             should_search = any(
                 word in state["question"].lower()
                 for word in ["method", "experiment", "result", "contribution", "limitation", "detail"]
@@ -91,9 +99,9 @@ class PaperChatAgent:
 
         llm = self._chat_model(temperature=0)
         prompt = (
-            "You are a paper explanation assistant. Decide whether the user question needs document retrieval. "
+            "You are a chat assistant that may optionally use an indexed paper database. Decide whether the user question needs database retrieval. "
             "Return compact JSON with keys should_search (boolean) and search_query (string). "
-            "Set should_search to false for general explanations or reformulations."
+            "Set should_search to false for greetings, small talk, or questions answerable without the database."
         )
         response = llm.invoke(
             [
@@ -101,6 +109,7 @@ class PaperChatAgent:
                 HumanMessage(
                     content=json.dumps(
                         {
+                            "chat_mode": state["chat_mode"],
                             "paper_title": state["paper_title"],
                             "question": state["question"],
                         },
@@ -135,12 +144,20 @@ class PaperChatAgent:
         )
         if not evidence_text:
             evidence_text = "No retrieval evidence used."
-        system_prompt = (
-            "You explain papers clearly for beginners. "
-            "Use evidence when provided, cite chunk ids inline, and say you are unsure when evidence is missing."
-        )
+        if state.get("chat_mode") == "paper":
+            system_prompt = (
+                "You explain papers clearly for beginners. "
+                "Use evidence when provided, cite chunk ids inline, and say you are unsure when evidence is missing."
+            )
+        else:
+            system_prompt = (
+                "You are a helpful chat assistant. "
+                "If indexed paper evidence is provided, use it and cite chunk ids inline. "
+                "If no evidence is needed, answer naturally without pretending you searched."
+            )
         user_prompt = json.dumps(
             {
+                "chat_mode": state["chat_mode"],
                 "paper_title": state["paper_title"],
                 "style": state["style"],
                 "question": state["question"],
@@ -154,7 +171,7 @@ class PaperChatAgent:
     def _mock_answer(self, state: AgentState, evidence: list[RetrievalResult]) -> str:
         if evidence:
             bullet_lines = [
-                f"- 来自 {item.section_title} (p.{item.page_number}, {item.chunk_id})：{item.content[:160]}"
+                f"- 来自论文 {item.paper_id} / {item.section_title} (p.{item.page_number}, {item.chunk_id})：{item.content[:160]}"
                 for item in evidence[:3]
             ]
             return (
@@ -162,6 +179,12 @@ class PaperChatAgent:
                 f"这是一份面向初学者的解释。系统检索到了以下证据：\n"
                 + "\n".join(bullet_lines)
                 + "\n\n简要总结：论文的核心信息已经从这些片段中提取出来，你可以继续追问方法细节、实验设置或局限性。"
+            )
+        if state.get("chat_mode") == "general":
+            return (
+                f"问题：{state['question']}\n"
+                "当前没有检索数据库，因为这个问题更适合直接聊天回答。"
+                "如果你想让我结合已经导入的论文内容，请继续问更具体的问题。"
             )
         return (
             f"问题：{state['question']}\n"

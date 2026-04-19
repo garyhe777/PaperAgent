@@ -118,3 +118,10 @@ class ChunkRepository:
                 (paper_id,),
             ).fetchall()
         return [_chunk_from_row(row) for row in rows]
+
+    def list_all_chunks(self) -> list[ChunkRecord]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM chunks ORDER BY paper_id, chunk_id"
+            ).fetchall()
+        return [_chunk_from_row(row) for row in rows]
