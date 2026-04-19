@@ -201,6 +201,15 @@ class IngestService:
                 ),
             )
         )
+        report.append(
+            (
+                "profile_generation",
+                "OK" if self.settings.llm_backend != "mock" else "MOCK",
+                "real llm profile generation enabled"
+                if self.settings.llm_backend != "mock"
+                else "mock summaries and keywords will be generated during ingest",
+            )
+        )
         datalab_enabled = self.settings.pdf_backend == "datalab"
         try:
             importlib.import_module("datalab_sdk")

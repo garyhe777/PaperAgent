@@ -45,20 +45,27 @@ def create_app(container) -> FastAPI:
 
     @app.get("/papers")
     def list_papers() -> list[dict]:
-        return [
-            {
-                "paper_id": paper.paper_id,
-                "title": paper.title,
-                "ingest_status": paper.ingest_status,
-            }
-            for paper in container.paper_repository.list_papers()
-        ]
+        response: list[dict] = []
+        for paper in container.paper_repository.list_papers():
+            profile = container.paper_repository.get_profile(paper.paper_id)
+            response.append(
+                {
+                    "paper_id": paper.paper_id,
+                    "title": paper.title,
+                    "ingest_status": paper.ingest_status,
+                    "profile_status": profile.profile_status if profile else "missing",
+                    "short_summary": profile.short_summary if profile else "",
+                    "keywords": profile.keywords if profile else [],
+                }
+            )
+        return response
 
     @app.get("/papers/{paper_id}")
     def get_paper(paper_id: str) -> dict:
         paper = container.paper_repository.get_paper(paper_id)
         if not paper:
             raise HTTPException(status_code=404, detail="Paper not found")
+        profile = container.paper_repository.get_profile(paper_id)
         return {
             "paper_id": paper.paper_id,
             "title": paper.title,
@@ -68,6 +75,11 @@ def create_app(container) -> FastAPI:
             "md_path": paper.md_path,
             "ingest_status": paper.ingest_status,
             "error_message": paper.error_message,
+            "abstract_text": profile.abstract_text if profile else "",
+            "short_summary": profile.short_summary if profile else "",
+            "keywords": profile.keywords if profile else [],
+            "profile_status": profile.profile_status if profile else "missing",
+            "profile_error": profile.profile_error if profile else None,
         }
 
     @app.post("/ingest")

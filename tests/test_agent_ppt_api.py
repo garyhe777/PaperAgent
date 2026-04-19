@@ -197,6 +197,7 @@ def test_ingest_url_and_api_endpoints(container: ServiceContainer, sample_pdf: P
         papers_response = client.get("/papers")
         assert papers_response.status_code == 200
         assert papers_response.json()
+        assert "profile_status" in papers_response.json()[0]
 
         with sample_pdf.open("rb") as handle:
             upload_response = client.post(
@@ -204,6 +205,13 @@ def test_ingest_url_and_api_endpoints(container: ServiceContainer, sample_pdf: P
                 files={"file": (sample_pdf.name, handle, "application/pdf")},
             )
         assert upload_response.status_code == 200
+
+        paper_response = client.get(f"/papers/{ingest_result['paper_id']}")
+        assert paper_response.status_code == 200
+        payload = paper_response.json()
+        assert "short_summary" in payload
+        assert "keywords" in payload
+        assert "profile_status" in payload
 
         stream_response = client.post(
             "/chat/stream",

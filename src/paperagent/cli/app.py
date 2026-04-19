@@ -130,9 +130,35 @@ def db_papers() -> None:
     table.add_column("paper_id")
     table.add_column("title")
     table.add_column("status")
+    table.add_column("profile")
     table.add_column("pdf")
     for paper in container.paper_repository.list_papers():
-        table.add_row(paper.paper_id, paper.title, paper.ingest_status, paper.pdf_path)
+        profile = container.paper_repository.get_profile(paper.paper_id)
+        table.add_row(
+            paper.paper_id,
+            paper.title,
+            paper.ingest_status,
+            profile.profile_status if profile else "missing",
+            paper.pdf_path,
+        )
+    console.print(table)
+
+
+@db_app.command("profiles")
+def db_profiles() -> None:
+    container = get_container()
+    table = Table(title="Paper Profiles")
+    table.add_column("paper_id")
+    table.add_column("status")
+    table.add_column("keywords")
+    table.add_column("short_summary")
+    for profile in container.paper_repository.list_profiles():
+        table.add_row(
+            profile.paper_id,
+            profile.profile_status,
+            ", ".join(profile.keywords[:5]),
+            profile.short_summary[:120],
+        )
     console.print(table)
 
 

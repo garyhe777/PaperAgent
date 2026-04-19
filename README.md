@@ -169,6 +169,8 @@ What happens internally:
 
 - the original PDF is saved under `.paperagent_data/storage/<paper_id>/`
 - the PDF is converted into Markdown
+- the markdown abstract is extracted when possible
+- the system generates and caches a `short_summary` and `keywords` profile for the paper
 - paper metadata is written into SQLite
 - chunks are written into SQLite
 - Chroma and BM25 indexes are built for retrieval
@@ -178,6 +180,13 @@ The Markdown conversion backend is chosen in this order:
 1. `ingest --pdf-backend ...` CLI option, if provided
 2. `PAPERAGENT_PDF_BACKEND` from `.env`
 3. default fallback: `datalab`
+
+PaperAgent now uses a two-level retrieval strategy:
+
+- paper catalog retrieval: search paper titles, abstracts, summaries, and keywords to decide which papers matter
+- paper context retrieval: search chunk-level evidence inside one paper or across indexed papers
+
+This is why the agent does not keep every title and full abstract inside the prompt. Once the library grows, that approach becomes expensive and unstable. Instead, the agent first searches the catalog, then drills into chunk evidence only when needed.
 
 ### 7. Ask questions about the paper
 
@@ -253,6 +262,11 @@ Recommended starting path:
 
 This reduces the number of things that can fail at once.
 
+The same rule applies to paper profiles:
+
+- with `PAPERAGENT_LLM_BACKEND=mock`, PaperAgent still generates deterministic fake `short_summary` and `keywords`
+- with a real OpenAI-compatible backend, those profiles are generated from the extracted abstract during ingest
+
 ### What config keys matter most?
 
 - `PAPERAGENT_LLM_BACKEND`: currently `mock` or `openai`
@@ -289,6 +303,7 @@ python -m paperagent.cli.app doctor
 python -m paperagent.cli.app ingest --pdf path\to\paper.pdf
 python -m paperagent.cli.app chat ask --paper-id <paper_id> --question "Explain the method"
 python -m paperagent.cli.app chat ask --question "hello"
+python -m paperagent.cli.app db profiles
 python -m paperagent.cli.app ppt generate --paper-id <paper_id>
 python -m paperagent.cli.app serve-api
 ```
