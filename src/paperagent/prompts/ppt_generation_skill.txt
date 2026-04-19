@@ -37,12 +37,12 @@ Quality rules:
 - Return tool arguments only through the tool call, with no markdown fence.
 
 Minimal example:
-{
+{{
   "paper_id": "{ppt_target_paper_id}",
   "title": "Paper Summary Deck",
   "audience": "beginner",
   "slides": [
-    {
+    {{
       "slide_type": "title",
       "title": "Paper Overview",
       "bullets": ["What problem the paper studies"],
@@ -50,8 +50,8 @@ Minimal example:
       "citations": [],
       "layout_hint": "title",
       "visual_intent": "hero"
-    },
-    {
+    }},
+    {{
       "slide_type": "content",
       "title": "Core Method",
       "bullets": ["Summarize the method simply"],
@@ -59,8 +59,8 @@ Minimal example:
       "citations": ["chunk-id-if-used"],
       "layout_hint": "content",
       "visual_intent": "method summary"
-    },
-    {
+    }},
+    {{
       "slide_type": "content",
       "title": "Results",
       "bullets": ["Summarize the key finding"],
@@ -68,6 +68,6 @@ Minimal example:
       "citations": ["chunk-id-if-used"],
       "layout_hint": "content",
       "visual_intent": "results summary"
-    }
+    }}
   ]
-}
+}}
