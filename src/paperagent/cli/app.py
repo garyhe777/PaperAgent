@@ -54,12 +54,18 @@ def ingest(
     ),
 ) -> None:
     container = get_container()
-    result = container.ingest_service.ingest(
-        pdf_path=pdf,
-        url=url,
-        override_title=title,
-        pdf_backend=pdf_backend,
+    selected_source = str(pdf or url or "")
+    selected_backend = pdf_backend or container.settings.pdf_backend
+    status_message = (
+        f"Ingesting {selected_source or 'paper'} with backend '{selected_backend}'..."
     )
+    with console.status(status_message, spinner="dots"):
+        result = container.ingest_service.ingest(
+            pdf_path=pdf,
+            url=url,
+            override_title=title,
+            pdf_backend=pdf_backend,
+        )
     console.print_json(json.dumps(result))
 
 
