@@ -7,3 +7,7 @@ src/*.egg-info/
 .vscode/
 frontend/node_modules/
 frontend/dist/
+datasets/
+output/
+outputs/
+scripts/__pycache__/
