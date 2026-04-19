@@ -41,7 +41,7 @@ def doctor() -> None:
 
 @app.command()
 def ingest(
-    pdf: Path | None = typer.Option(None, help="Local PDF path"),
+    pdf: str | None = typer.Option(None, help="Local PDF path"),
     url: str | None = typer.Option(None, help="Remote PDF URL"),
     title: str | None = typer.Option(None, help="Optional custom paper title"),
     pdf_backend: str | None = typer.Option(
