@@ -83,7 +83,8 @@ class ServiceContainer:
         return PPTService(
             settings=self.settings,
             paper_repository=self.paper_repository,
-            chunk_repository=self.chunk_repository,
+            ppt_planning_service=self.ppt_planning_service,
+            ppt_enrichment_service=self.ppt_enrichment_service,
         )
 
     @cached_property

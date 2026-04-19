@@ -179,7 +179,8 @@ def test_ppt_generation_creates_files(container: ServiceContainer, sample_pdf: P
     result = container.ingest_service.ingest(pdf_path=sample_pdf)
     deck = container.ppt_service.generate(result["paper_id"])
     assert Path(deck["ppt_path"]).exists()
-    assert Path(deck["outline_path"]).exists()
+    assert Path(deck["plan_path"]).exists()
+    assert Path(deck["content_path"]).exists()
     assert deck["slide_count"] >= 3
 
 
