@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     bm25_dir: Path = Field(default=Path(".paperagent_data/bm25"))
     deck_dir: Path = Field(default=Path(".paperagent_data/decks"))
     log_level: str = "INFO"
-    pdf_backend: str = "pymupdf"
+    pdf_backend: str = "datalab"
 
     llm_backend: str = "openai"
     llm_model: str = "gpt-4.1-mini"

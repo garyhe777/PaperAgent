@@ -37,15 +37,15 @@ PaperAgent reads configuration from `.env` automatically through `pydantic-setti
 PDF parsing backend is also configurable:
 
 ```env
-PAPERAGENT_PDF_BACKEND=pymupdf
+PAPERAGENT_PDF_BACKEND=datalab
 PAPERAGENT_DATALAB_API_KEY=
 PAPERAGENT_DATALAB_MODE=balanced
 ```
 
 Supported `PAPERAGENT_PDF_BACKEND` values:
 
-- `pymupdf`: the built-in local parser, fastest to get started
-- `datalab`: hosted PDF-to-Markdown conversion through Datalab, requires `PAPERAGENT_DATALAB_API_KEY`
+- `datalab`: hosted PDF-to-Markdown conversion through Datalab, now the default backend and requires `PAPERAGENT_DATALAB_API_KEY`
+- `pymupdf`: the built-in local parser, useful as a local fallback when you do not want a hosted parser
 
 If you choose `datalab`, make sure the active Python environment also has the optional `datalab_sdk` package installed.
 
@@ -177,7 +177,7 @@ The Markdown conversion backend is chosen in this order:
 
 1. `ingest --pdf-backend ...` CLI option, if provided
 2. `PAPERAGENT_PDF_BACKEND` from `.env`
-3. default fallback: `pymupdf`
+3. default fallback: `datalab`
 
 ### 7. Ask questions about the paper
 

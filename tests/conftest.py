@@ -44,6 +44,7 @@ def test_settings(tmp_path: Path) -> Settings:
         chroma_dir=tmp_path / "data" / "chroma",
         bm25_dir=tmp_path / "data" / "bm25",
         deck_dir=tmp_path / "data" / "decks",
+        pdf_backend="pymupdf",
         llm_backend="mock",
         embedding_backend="hash",
     )
