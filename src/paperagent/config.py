@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     datalab_mode: str = "balanced"
 
     default_top_k: int = 5
+    agent_max_tool_iterations: int = 8
     chunk_size: int = 1400
     chunk_overlap: int = 200
 
