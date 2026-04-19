@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paperagent"
+version = "0.1.0"
+description = "PaperAgent: CLI-first paper explanation and PPT generation assistant."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "chromadb",
+  "fastapi",
+  "httpx",
+  "langchain",
+  "langchain-openai",
+  "langgraph",
+  "pydantic>=2.0",
+  "pydantic-settings",
+  "pymupdf",
+  "python-multipart",
+  "python-pptx",
+  "rank-bm25",
+  "rich",
+  "typer",
+  "uvicorn",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+]
+
+[project.scripts]
+paperagent = "paperagent.cli.app:app"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

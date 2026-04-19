@@ -1,0 +1,7 @@
+.paperagent_data/
+__pycache__/
+.pytest_cache/
+*.pyc
+.vscode/
+frontend/node_modules/
+frontend/dist/
