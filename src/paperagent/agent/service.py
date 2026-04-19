@@ -6,12 +6,10 @@ from typing import Annotated, Iterator, TypedDict
 from uuid import uuid4
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_core.messages import messages_to_dict
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
-from langgraph.prebuilt import InjectedState, ToolNode
 
 from paperagent.agent.prompts import PromptLoader
 from paperagent.config import Settings
@@ -47,7 +45,6 @@ class PaperChatAgent:
         self.prompt_loader = PromptLoader()
         self.max_tool_iterations = 4
         self.tools = self._build_tools()
-        self.tool_node = ToolNode(self.tools)
         self.graph = self._build_graph()
 
     def ask(
@@ -96,47 +93,51 @@ class PaperChatAgent:
             "latest_retrieval": [],
             "tool_iterations": 0,
         }
-        result = self.graph.invoke(state)
+        final_state: AgentState | None = None
+        emitted_tool_call_ids: set[str] = set()
+        streamed_answer = False
+        status_emitted = False
 
+        for mode, data in self.graph.stream(
+            state,
+            stream_mode=["messages", "updates", "values"],
+        ):
+            if mode == "messages":
+                chunk, metadata = data
+                if metadata.get("langgraph_node") != "agent":
+                    continue
+                text = self._chunk_text(chunk)
+                if not text:
+                    continue
+                if not status_emitted:
+                    yield AgentEvent("status", "Generating final answer", {"session_id": session.session_id})
+                    status_emitted = True
+                streamed_answer = True
+                yield AgentEvent("final_answer_stream", text, {"session_id": session.session_id})
+                continue
+
+            if mode == "updates":
+                for event in self._yield_update_events(
+                    data=data,
+                    session_id=session.session_id,
+                    emitted_tool_call_ids=emitted_tool_call_ids,
+                ):
+                    yield event
+                continue
+
+            if mode == "values":
+                final_state = data
+
+        result = final_state or state
         new_messages = result["messages"][len(history):]
         self.chat_message_repository.append_messages(session.session_id, new_messages)
         self._touch_session(session, paper_id=effective_paper_id, style=session.style)
 
-        for message in new_messages:
-            if isinstance(message, AIMessage) and message.tool_calls:
-                for tool_call in message.tool_calls:
-                    yield AgentEvent(
-                        "tool_called",
-                        f"Calling tool {tool_call['name']}",
-                        {
-                            "tool_name": tool_call["name"],
-                            "args": tool_call.get("args", {}),
-                            "session_id": session.session_id,
-                        },
-                    )
-
-        retrievals = result.get("latest_retrieval", [])
-        if retrievals:
-            yield AgentEvent(
-                "rag_hit",
-                f"Retrieved {len(retrievals)} relevant chunks.",
-                {
-                    "chunks": [
-                        {
-                            "paper_id": item.paper_id,
-                            "chunk_id": item.chunk_id,
-                            "section_title": item.section_title,
-                            "page_number": item.page_number,
-                            "preview": item.content[:160],
-                        }
-                        for item in retrievals
-                    ],
-                    "session_id": session.session_id,
-                },
-            )
-
         final_message = self._find_last_ai_without_tool_calls(result["messages"])
         answer = final_message.content if final_message else ""
+        if streamed_answer:
+            yield AgentEvent("final_answer_done", "", {"session_id": session.session_id})
+            return
         yield from self._stream_answer(answer, session.session_id)
 
     def _build_graph(self):
@@ -154,32 +155,9 @@ class PaperChatAgent:
 
     def _build_tools(self):
         @tool
-        def search_paper_context(
-            query: str,
-            state: Annotated[dict, InjectedState],
-        ) -> str:
+        def search_paper_context(query: str) -> str:
             """Search imported paper chunks and return the most relevant evidence."""
-
-            results = self.retrieval_service.retrieve(
-                query=query,
-                paper_id=state.get("paper_id"),
-                top_k=self.settings.default_top_k,
-            )
-            payload = {
-                "query": query,
-                "results": [
-                    {
-                        "paper_id": item.paper_id,
-                        "chunk_id": item.chunk_id,
-                        "section_title": item.section_title,
-                        "page_number": item.page_number,
-                        "score": item.score,
-                        "content": item.content,
-                    }
-                    for item in results
-                ],
-            }
-            return json.dumps(payload, ensure_ascii=False)
+            return "This tool is executed by the LangGraph tools node."
 
         return [search_paper_context]
 
@@ -203,9 +181,45 @@ class PaperChatAgent:
         return {"messages": [response]}
 
     def _run_tools(self, state: AgentState) -> AgentState:
-        tool_update = self.tool_node.invoke(state)
-        tool_messages = tool_update.get("messages", [])
-        latest_retrieval = self._extract_retrieval_results(tool_messages)
+        tool_messages: list[ToolMessage] = []
+        latest_retrieval: list[RetrievalResult] = []
+        last_message = state["messages"][-1]
+        if not isinstance(last_message, AIMessage):
+            return {
+                "messages": [],
+                "latest_retrieval": [],
+                "tool_iterations": state.get("tool_iterations", 0) + 1,
+            }
+
+        for tool_call in last_message.tool_calls:
+            tool_name = str(tool_call["name"])
+            if tool_name != "search_paper_context":
+                tool_messages.append(
+                    ToolMessage(
+                        content=json.dumps(
+                            {
+                                "error": f"Unsupported tool: {tool_name}",
+                                "results": [],
+                            },
+                            ensure_ascii=False,
+                        ),
+                        tool_call_id=str(tool_call["id"]),
+                    )
+                )
+                continue
+
+            query = str(tool_call.get("args", {}).get("query", ""))
+            content, retrievals = self._search_paper_context(
+                query=query,
+                paper_id=state.get("paper_id"),
+            )
+            latest_retrieval.extend(retrievals)
+            tool_messages.append(
+                ToolMessage(
+                    content=content,
+                    tool_call_id=str(tool_call["id"]),
+                )
+            )
         return {
             "messages": tool_messages,
             "latest_retrieval": latest_retrieval,
@@ -361,6 +375,32 @@ class PaperChatAgent:
                 )
         return retrievals
 
+    def _search_paper_context(
+        self,
+        query: str,
+        paper_id: str | None,
+    ) -> tuple[str, list[RetrievalResult]]:
+        results = self.retrieval_service.retrieve(
+            query=query,
+            paper_id=paper_id,
+            top_k=self.settings.default_top_k,
+        )
+        payload = {
+            "query": query,
+            "results": [
+                {
+                    "paper_id": item.paper_id,
+                    "chunk_id": item.chunk_id,
+                    "section_title": item.section_title,
+                    "page_number": item.page_number,
+                    "score": item.score,
+                    "content": item.content,
+                }
+                for item in results
+            ],
+        }
+        return json.dumps(payload, ensure_ascii=False), results
+
     def _find_last_ai_without_tool_calls(self, messages: list[BaseMessage]) -> AIMessage | None:
         for message in reversed(messages):
             if isinstance(message, AIMessage) and not message.tool_calls:
@@ -369,8 +409,8 @@ class PaperChatAgent:
 
     def _stream_answer(self, answer: str, session_id: str) -> Iterator[AgentEvent]:
         yield AgentEvent("status", "Generating final answer", {"session_id": session_id})
-        for token in answer.split():
-            yield AgentEvent("final_answer_stream", token + " ", {"session_id": session_id})
+        for char in answer:
+            yield AgentEvent("final_answer_stream", char, {"session_id": session_id})
         yield AgentEvent("final_answer_done", "", {"session_id": session_id})
 
     def _chat_model(self, temperature: float) -> ChatOpenAI:
@@ -379,4 +419,60 @@ class PaperChatAgent:
             api_key=self.settings.llm_api_key,
             base_url=self.settings.llm_base_url,
             temperature=temperature,
+            streaming=True,
         )
+
+    def _yield_update_events(
+        self,
+        data: dict,
+        session_id: str,
+        emitted_tool_call_ids: set[str],
+    ) -> Iterator[AgentEvent]:
+        for node_name, update in data.items():
+            if node_name == "agent":
+                for message in update.get("messages", []):
+                    if not isinstance(message, AIMessage) or not message.tool_calls:
+                        continue
+                    for tool_call in message.tool_calls:
+                        tool_call_id = str(tool_call.get("id") or "")
+                        if tool_call_id and tool_call_id in emitted_tool_call_ids:
+                            continue
+                        if tool_call_id:
+                            emitted_tool_call_ids.add(tool_call_id)
+                        yield AgentEvent(
+                            "tool_called",
+                            f"Calling tool {tool_call['name']}",
+                            {
+                                "tool_name": tool_call["name"],
+                                "args": tool_call.get("args", {}),
+                                "session_id": session_id,
+                            },
+                        )
+
+            if node_name == "tools":
+                retrievals = update.get("latest_retrieval", [])
+                if not retrievals:
+                    continue
+                yield AgentEvent(
+                    "rag_hit",
+                    f"Retrieved {len(retrievals)} relevant chunks.",
+                    {
+                        "chunks": [
+                            {
+                                "paper_id": item.paper_id,
+                                "chunk_id": item.chunk_id,
+                                "section_title": item.section_title,
+                                "page_number": item.page_number,
+                                "preview": item.content[:160],
+                            }
+                            for item in retrievals
+                        ],
+                        "session_id": session_id,
+                    },
+                )
+
+    def _chunk_text(self, chunk) -> str:
+        content = getattr(chunk, "content", "")
+        if isinstance(content, str):
+            return content
+        return ""
