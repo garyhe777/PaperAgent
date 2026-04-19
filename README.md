@@ -216,7 +216,13 @@ General chat mode behavior:
 ### 8. Generate a PPT
 
 ```powershell
-python -m paperagent.cli.app ppt generate --paper-id <paper_id>
+python -m paperagent.cli.app pptgen --paper-id <paper_id>
+```
+
+You can also let the CLI infer the paper from a natural-language request:
+
+```powershell
+python -m paperagent.cli.app pptgen --prompt "对 tag-wm 做 ppt"
 ```
 
 This now follows a three-step pipeline:
@@ -311,7 +317,7 @@ python -m paperagent.cli.app ingest --pdf path\to\paper.pdf
 python -m paperagent.cli.app chat ask --paper-id <paper_id> --question "Explain the method"
 python -m paperagent.cli.app chat ask --question "hello"
 python -m paperagent.cli.app db profiles
-python -m paperagent.cli.app ppt generate --paper-id <paper_id>
+python -m paperagent.cli.app pptgen --paper-id <paper_id>
 python -m paperagent.cli.app serve-api
 ```
 
