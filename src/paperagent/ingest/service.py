@@ -13,6 +13,7 @@ import httpx
 from paperagent.config import Settings
 from paperagent.ingest.chunking import chunk_sections, split_markdown_into_sections
 from paperagent.ingest.pdf_parser import build_pdf_markdown_converter
+from paperagent.ingest.profile_service import PaperProfileService
 from paperagent.schemas.models import ChunkRecord, PaperRecord
 from paperagent.storage.repositories import ChunkRepository, PaperRepository
 
@@ -29,6 +30,7 @@ class IngestService:
         self.paper_repository = paper_repository
         self.chunk_repository = chunk_repository
         self.retrieval_service = retrieval_service
+        self.profile_service = PaperProfileService(settings)
 
     def ingest(
         self,
@@ -91,6 +93,12 @@ class IngestService:
             markdown_path = paper_dir / "paper.md"
             markdown_path.write_text(markdown_text, encoding="utf-8")
             self._write_ingest_meta(paper_dir, selected_backend)
+            profile = self.profile_service.build_profile(
+                paper_id=paper_id,
+                title=override_title or title,
+                markdown_text=markdown_text,
+            )
+            self.paper_repository.upsert_profile(profile)
 
             sections = split_markdown_into_sections(markdown_text)
             chunk_blocks = chunk_sections(

@@ -1,0 +1,13 @@
+You generate compact paper catalog metadata from an academic paper abstract.
+
+Return valid JSON only with this shape:
+{
+  "short_summary": "2-3 concise sentences for a paper catalog",
+  "keywords": ["keyword1", "keyword2", "keyword3"]
+}
+
+Rules:
+1. Base the output only on the provided title and abstract.
+2. Keep `short_summary` faithful, compact, and readable for beginners.
+3. `keywords` should contain 5-8 short phrases or terms.
+4. Do not include markdown fences or extra commentary.
