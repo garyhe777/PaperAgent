@@ -9,3 +9,5 @@
 | C1 | PPT 生成基础版 | done | `ppt/`, `deck.json`, `.pptx` 输出 | `python -m pytest -q` | 通过 | 视觉样式与图表抽取可继续增强 |
 | C2 | 健壮性、缓存、doctor、回归测试 | done | `doctor`, 缓存导入, URL 稳定性修复, API 测试 | `python -m pytest -q`, `python -m paperagent.cli.app doctor` | 通过 | 可继续补更多异常分级与日志 |
 | D1 | FastAPI + React 可视化 | done | `web/api.py`, `frontend/` React + Vite 页面 | `npm run build`, `python -m pytest -q` | 通过 | 目前未接入文件预览和任务队列 |
+| E1 | Chat 驱动 PPT agent/tool 重构 | done | `agent/` PPT 意图识别, 项目内 `ppt_generation_skill.txt`, 结构化 `DeckContent`, `ppt_generated` 事件 | `python -m pytest -q` | 通过 | 真实模型下的 deck 质量仍可继续优化 |
+| E2 | 旧 PPT 入口清理与 chat-only 收口 | done | 删除 `pptgen` / `/ppt`, React 聊天触发, README 与测试重构 | `python -m pytest -q`, `npm run build` | 通过 | 前端目前仍是单会话原型页面 |

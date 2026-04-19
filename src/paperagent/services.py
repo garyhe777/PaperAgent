@@ -6,8 +6,6 @@ from paperagent.agent.service import PaperChatAgent
 from paperagent.config import Settings
 from paperagent.ingest.service import IngestService
 from paperagent.retrieval.catalog_service import PaperCatalogSearchService
-from paperagent.ppt.enrichment import PPTEnrichmentService
-from paperagent.ppt.planning import PPTPlanningService
 from paperagent.ppt.rendering import PPTRenderService
 from paperagent.ppt.service import PPTService
 from paperagent.retrieval.service import HybridRetrievalService
@@ -77,6 +75,7 @@ class ServiceContainer:
             chat_message_repository=self.chat_message_repository,
             retrieval_service=self.retrieval_service,
             paper_catalog_service=self.paper_catalog_service,
+            ppt_service=self.ppt_service,
         )
 
     @cached_property
@@ -84,23 +83,7 @@ class ServiceContainer:
         return PPTService(
             settings=self.settings,
             paper_repository=self.paper_repository,
-            ppt_planning_service=self.ppt_planning_service,
-            ppt_enrichment_service=self.ppt_enrichment_service,
             ppt_render_service=self.ppt_render_service,
-        )
-
-    @cached_property
-    def ppt_planning_service(self) -> PPTPlanningService:
-        return PPTPlanningService(
-            settings=self.settings,
-            paper_repository=self.paper_repository,
-        )
-
-    @cached_property
-    def ppt_enrichment_service(self) -> PPTEnrichmentService:
-        return PPTEnrichmentService(
-            settings=self.settings,
-            retrieval_service=self.retrieval_service,
         )
 
     @cached_property

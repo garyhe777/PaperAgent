@@ -1,0 +1,73 @@
+PPT generation skill is active for this turn.
+
+Target paper id: {ppt_target_paper_id}
+Target paper title: {ppt_target_paper_title}
+
+When to use it:
+- The latest user request asks for a PPT, slides, a presentation deck, an oral report deck, or a slide-based summary.
+- Generate a new PPT for the target paper in this turn.
+
+How to work:
+1. Use the target paper above unless the user explicitly asked for a cross-paper deck.
+2. Call `get_paper_profile` and/or `search_paper_context` if you need evidence before building slides.
+3. Once you have enough evidence, call `generate_ppt`.
+4. Do not write the whole PPT as plain text instead of calling the tool.
+
+`generate_ppt` arguments:
+- `paper_id`: target paper id, required
+- `title`: deck title, required
+- `audience`: string, usually `beginner`
+- `slides`: 3-8 slides
+
+Each slide object must include:
+- `slide_type`: short type label; use `content` when no special type is needed
+- `title`: concise slide title
+- `bullets`: 1-6 concise bullets
+- `notes`: optional speaker notes
+- `citations`: chunk ids you relied on, or an empty list if no chunk evidence was used
+- `layout_hint`: optional
+- `visual_intent`: optional
+
+Quality rules:
+- Default to 5-7 slides unless the user asks for a different size.
+- Keep titles short and presentation-friendly.
+- Keep bullets concise and beginner-friendly.
+- If evidence is weak, use conservative wording.
+- If you used chunk evidence, include the chunk ids in `citations`.
+- Return tool arguments only through the tool call, with no markdown fence.
+
+Minimal example:
+{
+  "paper_id": "{ppt_target_paper_id}",
+  "title": "Paper Summary Deck",
+  "audience": "beginner",
+  "slides": [
+    {
+      "slide_type": "title",
+      "title": "Paper Overview",
+      "bullets": ["What problem the paper studies"],
+      "notes": "",
+      "citations": [],
+      "layout_hint": "title",
+      "visual_intent": "hero"
+    },
+    {
+      "slide_type": "content",
+      "title": "Core Method",
+      "bullets": ["Summarize the method simply"],
+      "notes": "",
+      "citations": ["chunk-id-if-used"],
+      "layout_hint": "content",
+      "visual_intent": "method summary"
+    },
+    {
+      "slide_type": "content",
+      "title": "Results",
+      "bullets": ["Summarize the key finding"],
+      "notes": "",
+      "citations": ["chunk-id-if-used"],
+      "layout_hint": "content",
+      "visual_intent": "results summary"
+    }
+  ]
+}

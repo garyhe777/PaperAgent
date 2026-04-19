@@ -24,11 +24,6 @@ class ChatRequest(BaseModel):
     style: str = "beginner"
 
 
-class PPTRequest(BaseModel):
-    paper_id: str
-    template_path: str | None = None
-
-
 def create_app(container) -> FastAPI:
     app = FastAPI(title="PaperAgent API")
     app.add_middleware(
@@ -108,16 +103,6 @@ def create_app(container) -> FastAPI:
         finally:
             if temp_path and temp_path.exists():
                 temp_path.unlink()
-
-    @app.post("/ppt")
-    def generate_ppt(request: PPTRequest) -> dict:
-        try:
-            return container.ppt_service.generate(
-                paper_id=request.paper_id,
-                template_path=Path(request.template_path) if request.template_path else None,
-            )
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/chat/stream")
     def chat_stream(request: ChatRequest) -> StreamingResponse:

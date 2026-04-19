@@ -87,7 +87,10 @@ class HybridRetrievalService:
         }
         if paper_id:
             query_kwargs["where"] = {"paper_id": paper_id}
-        response = collection.query(**query_kwargs)
+        try:
+            response = collection.query(**query_kwargs)
+        except Exception:
+            return []
         ids = response.get("ids", [[]])[0]
         documents = response.get("documents", [[]])[0]
         metadatas = response.get("metadatas", [[]])[0]

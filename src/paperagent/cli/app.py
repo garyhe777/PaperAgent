@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
-from pathlib import Path
 
 import typer
 from rich.console import Console
@@ -112,25 +110,6 @@ def chat_interactive(
             render_event(event)
 
 
-@app.command("pptgen")
-def generate_ppt(
-    paper_id: str | None = typer.Option(None, help="Optional paper identifier"),
-    prompt: str | None = typer.Option(
-        None,
-        help='Optional natural language request, e.g. "对 tag-wm 做 ppt"',
-    ),
-    template: Path | None = typer.Option(None, help="Existing PPTX template"),
-) -> None:
-    container = get_container()
-    resolved_paper_id = _resolve_pptgen_paper_id(
-        container=container,
-        paper_id=paper_id,
-        prompt=prompt,
-    )
-    result = container.ppt_service.generate(paper_id=resolved_paper_id, template_path=template)
-    console.print_json(json.dumps(result))
-
-
 @db_app.command("papers")
 def db_papers() -> None:
     container = get_container()
@@ -198,41 +177,6 @@ def render_event(event: AgentEvent) -> None:
         console.print("")
         return
     console.print(f"[cyan]{event.event_type}[/cyan]: {event.message}")
-
-
-def _resolve_pptgen_paper_id(
-    container: ServiceContainer,
-    paper_id: str | None,
-    prompt: str | None,
-) -> str:
-    if paper_id:
-        return paper_id
-    if not prompt or not prompt.strip():
-        raise typer.BadParameter("Provide --paper-id or --prompt for pptgen.")
-
-    normalized_prompt = prompt.strip().lower()
-    papers = container.paper_repository.list_papers()
-
-    # First prefer exact paper_id mentions in natural language.
-    for paper in sorted(papers, key=lambda item: len(item.paper_id), reverse=True):
-        if paper.paper_id.lower() in normalized_prompt:
-            return paper.paper_id
-
-    # Then try exact title containment with loose normalization.
-    prompt_alpha = _normalize_search_text(normalized_prompt)
-    for paper in papers:
-        if _normalize_search_text(paper.title) and _normalize_search_text(paper.title) in prompt_alpha:
-            return paper.paper_id
-
-    # Finally fall back to catalog search over title/summary/keywords.
-    catalog_hits = container.paper_catalog_service.search_papers(prompt, top_k=1)
-    if catalog_hits:
-        return catalog_hits[0].paper_id
-    raise typer.BadParameter(f"Could not infer a paper from prompt: {prompt}")
-
-
-def _normalize_search_text(text: str) -> str:
-    return " ".join(re.findall(r"[a-z0-9]+", text.lower()))
 
 
 if __name__ == "__main__":

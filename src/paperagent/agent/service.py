@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Annotated, Iterator, TypedDict
+from typing import Annotated, Any, Iterator, TypedDict
 from uuid import uuid4
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
@@ -10,10 +10,12 @@ from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
+from pydantic import BaseModel, Field
 
+from paperagent.agent.paper_resolution import is_ppt_request, resolve_ppt_target
 from paperagent.agent.prompts import PromptLoader
 from paperagent.config import Settings
-from paperagent.schemas.models import AgentEvent, ChatSessionRecord, PaperCatalogResult, RetrievalResult
+from paperagent.schemas.models import AgentEvent, ChatSessionRecord, DeckContent, PaperCatalogResult, RetrievalResult, SlideContent
 from paperagent.storage.repositories import ChatMessageRepository, ChatSessionRepository, PaperRepository
 
 
@@ -24,9 +26,20 @@ class AgentState(TypedDict, total=False):
     paper_title: str
     style: str
     chat_mode: str
+    ppt_intent: bool
+    ppt_target_paper_id: str | None
+    ppt_target_paper_title: str | None
     latest_retrieval: list[RetrievalResult]
     latest_paper_catalog: list[PaperCatalogResult]
+    latest_ppt_result: dict[str, Any] | None
     tool_iterations: int
+
+
+class GeneratePPTInput(BaseModel):
+    paper_id: str
+    title: str
+    audience: str = "beginner"
+    slides: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class PaperChatAgent:
@@ -38,6 +51,7 @@ class PaperChatAgent:
         chat_message_repository: ChatMessageRepository,
         retrieval_service,
         paper_catalog_service=None,
+        ppt_service=None,
     ) -> None:
         self.settings = settings
         self.paper_repository = paper_repository
@@ -45,6 +59,7 @@ class PaperChatAgent:
         self.chat_message_repository = chat_message_repository
         self.retrieval_service = retrieval_service
         self.paper_catalog_service = paper_catalog_service
+        self.ppt_service = ppt_service
         self.prompt_loader = PromptLoader()
         self.max_tool_iterations = 4
         self.tools = self._build_tools()
@@ -84,17 +99,44 @@ class PaperChatAgent:
         title = paper.title if paper else "general chat"
         yield AgentEvent("agent_started", f"Preparing answer for {title}")
 
+        ppt_intent = is_ppt_request(question)
+        ppt_target = resolve_ppt_target(
+            prompt=question,
+            scoped_paper_id=effective_paper_id,
+            paper_repository=self.paper_repository,
+            paper_catalog_service=self.paper_catalog_service,
+        ) if ppt_intent else None
+
         history = self.chat_message_repository.list_messages(session.session_id)
-        initial_messages = history + [HumanMessage(content=question)]
+        human_message = HumanMessage(content=question)
+
+        if ppt_intent and (not ppt_target or not ppt_target.paper_id):
+            failure_message = (
+                "I couldn't determine which indexed paper to use for this PPT request. "
+                "Please mention the paper title or start the chat with a scoped paper."
+            )
+            self.chat_message_repository.append_messages(
+                session.session_id,
+                [human_message, AIMessage(content=failure_message)],
+            )
+            self._touch_session(session, paper_id=effective_paper_id, style=session.style)
+            yield from self._stream_answer(failure_message, session.session_id)
+            return
+
+        initial_messages = history + [human_message]
         state: AgentState = {
             "session_id": session.session_id,
             "paper_id": effective_paper_id,
             "paper_title": paper.title if paper else "Indexed paper database",
             "style": session.style,
             "chat_mode": chat_mode,
+            "ppt_intent": ppt_intent,
+            "ppt_target_paper_id": ppt_target.paper_id if ppt_target else None,
+            "ppt_target_paper_title": ppt_target.paper_title if ppt_target else None,
             "messages": initial_messages,
             "latest_retrieval": [],
             "latest_paper_catalog": [],
+            "latest_ppt_result": None,
             "tool_iterations": 0,
         }
         final_state: AgentState | None = None
@@ -173,7 +215,17 @@ class PaperChatAgent:
             """Return the cached abstract summary and keywords for one indexed paper."""
             return "This tool is executed by the LangGraph tools node."
 
-        return [search_paper_context, search_papers, get_paper_profile]
+        @tool(args_schema=GeneratePPTInput)
+        def generate_ppt(
+            paper_id: str,
+            title: str,
+            audience: str = "beginner",
+            slides: list[dict[str, Any]] | None = None,
+        ) -> str:
+            """Render a structured PPT deck for one indexed paper."""
+            return "This tool is executed by the LangGraph tools node."
+
+        return [search_paper_context, search_papers, get_paper_profile, generate_ppt]
 
     def _agent_step(self, state: AgentState) -> AgentState:
         messages = state["messages"]
@@ -198,12 +250,14 @@ class PaperChatAgent:
         tool_messages: list[ToolMessage] = []
         latest_retrieval: list[RetrievalResult] = []
         latest_paper_catalog: list[PaperCatalogResult] = []
+        latest_ppt_result: dict[str, Any] | None = None
         last_message = state["messages"][-1]
         if not isinstance(last_message, AIMessage):
             return {
                 "messages": [],
                 "latest_retrieval": [],
                 "latest_paper_catalog": [],
+                "latest_ppt_result": None,
                 "tool_iterations": state.get("tool_iterations", 0) + 1,
             }
 
@@ -248,6 +302,16 @@ class PaperChatAgent:
                 )
                 continue
 
+            if tool_name == "generate_ppt":
+                content, latest_ppt_result = self._generate_ppt(tool_call.get("args", {}))
+                tool_messages.append(
+                    ToolMessage(
+                        content=content,
+                        tool_call_id=str(tool_call["id"]),
+                    )
+                )
+                continue
+
             tool_messages.append(
                 ToolMessage(
                     content=json.dumps(
@@ -265,6 +329,7 @@ class PaperChatAgent:
             "messages": tool_messages,
             "latest_retrieval": latest_retrieval,
             "latest_paper_catalog": latest_paper_catalog,
+            "latest_ppt_result": latest_ppt_result,
             "tool_iterations": state.get("tool_iterations", 0) + 1,
         }
 
@@ -329,12 +394,20 @@ class PaperChatAgent:
 
     def _load_system_prompt(self, state: AgentState) -> str:
         prompt_name = "agent_paper_system.txt" if state.get("chat_mode") == "paper" else "agent_general_system.txt"
-        return self.prompt_loader.load(
+        prompt = self.prompt_loader.load(
             prompt_name,
             style=state.get("style", "beginner"),
             paper_title=state.get("paper_title", "Indexed paper database"),
             paper_scope=state.get("paper_id") or "all indexed papers",
         )
+        if not state.get("ppt_intent"):
+            return prompt
+        skill_prompt = self.prompt_loader.load(
+            "ppt_generation_skill.txt",
+            ppt_target_paper_id=state.get("ppt_target_paper_id") or "",
+            ppt_target_paper_title=state.get("ppt_target_paper_title") or "",
+        )
+        return f"{prompt}\n\n{skill_prompt}"
 
     def _mock_agent_message(self, state: AgentState) -> AIMessage:
         last_message = state["messages"][-1]
@@ -347,6 +420,29 @@ class PaperChatAgent:
                         "Hello. I can chat normally, and if you ask about imported papers I can decide whether "
                         "to search the paper database."
                     )
+                )
+            if state.get("ppt_intent"):
+                target_paper_id = state.get("ppt_target_paper_id")
+                if not target_paper_id:
+                    return AIMessage(
+                        content=(
+                            "I couldn't determine which indexed paper to use for this PPT request. "
+                            "Please mention the paper title or use a scoped paper chat."
+                        )
+                    )
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "search_paper_context",
+                            "args": {
+                                "query": "Summarize the paper problem, method, experiments, and conclusion for a PPT deck.",
+                                "paper_id": target_paper_id,
+                            },
+                            "id": f"call_{uuid4().hex[:8]}",
+                            "type": "tool_call",
+                        }
+                    ],
                 )
             should_search_catalog = (
                 state.get("chat_mode") == "general"
@@ -433,6 +529,20 @@ class PaperChatAgent:
         if isinstance(last_message, ToolMessage):
             payload = self._safe_tool_payload(last_message.content)
             tool_name = str(payload.get("tool_name", ""))
+            if tool_name == "generate_ppt":
+                if payload.get("error"):
+                    return AIMessage(
+                        content=(
+                            "我尝试生成 PPT，但结构化内容没有通过校验或渲染失败："
+                            + str(payload["error"])
+                        )
+                    )
+                return AIMessage(
+                    content=(
+                        f"我已经为论文 {payload.get('paper_id', '')} 生成 PPT，"
+                        f"输出路径是 {payload.get('ppt_path', '')}。"
+                    )
+                )
             if tool_name == "search_papers":
                 papers = payload.get("results", [])
                 if len(papers) == 1:
@@ -469,6 +579,24 @@ class PaperChatAgent:
                     )
 
             retrievals = self._extract_retrieval_results([last_message])
+            if state.get("ppt_intent") and state.get("ppt_target_paper_id"):
+                deck_content = self._build_mock_ppt_deck(
+                    paper_id=str(state["ppt_target_paper_id"]),
+                    paper_title=state.get("ppt_target_paper_title") or "Paper Deck",
+                    retrievals=retrievals,
+                    audience=state.get("style", "beginner"),
+                )
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "generate_ppt",
+                            "args": self._deck_content_to_tool_args(deck_content),
+                            "id": f"call_{uuid4().hex[:8]}",
+                            "type": "tool_call",
+                        }
+                    ],
+                )
             if retrievals:
                 bullet_lines = [
                     f"- 来自论文 {item.paper_id} / {item.section_title} (p.{item.page_number}, {item.chunk_id})：{item.content[:160]}"
@@ -571,6 +699,154 @@ class PaperChatAgent:
         }
         return json.dumps(payload, ensure_ascii=False)
 
+    def _generate_ppt(self, raw_args: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
+        if not self.ppt_service:
+            payload = {
+                "tool_name": "generate_ppt",
+                "error": "PPT service is unavailable.",
+            }
+            return json.dumps(payload, ensure_ascii=False), None
+
+        try:
+            deck_content = self._tool_args_to_deck_content(raw_args)
+            result = self.ppt_service.generate_from_content(deck_content)
+        except Exception as exc:  # noqa: BLE001
+            payload = {
+                "tool_name": "generate_ppt",
+                "paper_id": str(raw_args.get("paper_id", "")).strip(),
+                "error": str(exc),
+            }
+            return json.dumps(payload, ensure_ascii=False), None
+
+        payload = {
+            "tool_name": "generate_ppt",
+            **result,
+        }
+        return json.dumps(payload, ensure_ascii=False), result
+
+    def _tool_args_to_deck_content(self, raw_args: dict[str, Any]) -> DeckContent:
+        slides = raw_args.get("slides", [])
+        if not isinstance(slides, list):
+            slides = []
+
+        return DeckContent(
+            paper_id=str(raw_args.get("paper_id", "")).strip(),
+            title=str(raw_args.get("title", "")).strip(),
+            audience=str(raw_args.get("audience", "beginner")).strip() or "beginner",
+            slides=[
+                SlideContent(
+                    slide_type=str(item.get("slide_type", item.get("type", ""))).strip(),
+                    title=str(item.get("title", "")).strip(),
+                    bullets=[str(bullet).strip() for bullet in item.get("bullets", []) if str(bullet).strip()],
+                    notes=str(item.get("notes", "")).strip(),
+                    citations=[
+                        str(citation).strip()
+                        for citation in item.get("citations", [])
+                        if str(citation).strip()
+                    ],
+                    layout_hint=str(item.get("layout_hint", "")).strip(),
+                    visual_intent=str(item.get("visual_intent", "")).strip(),
+                )
+                for item in slides
+                if isinstance(item, dict)
+            ],
+        )
+
+    def _deck_content_to_tool_args(self, deck_content: DeckContent) -> dict[str, Any]:
+        return {
+            "paper_id": deck_content.paper_id,
+            "title": deck_content.title,
+            "audience": deck_content.audience,
+            "slides": [
+                {
+                    "slide_type": slide.slide_type,
+                    "title": slide.title,
+                    "bullets": slide.bullets,
+                    "notes": slide.notes,
+                    "citations": slide.citations,
+                    "layout_hint": slide.layout_hint,
+                    "visual_intent": slide.visual_intent,
+                }
+                for slide in deck_content.slides
+            ],
+        }
+
+    def _build_mock_ppt_deck(
+        self,
+        paper_id: str,
+        paper_title: str,
+        retrievals: list[RetrievalResult],
+        audience: str,
+    ) -> DeckContent:
+        bullets_from_retrievals = [
+            item.content.replace("\n", " ").strip()[:120]
+            for item in retrievals[:4]
+            if item.content.strip()
+        ]
+        citations = [item.chunk_id for item in retrievals[:4]]
+        if not bullets_from_retrievals:
+            bullets_from_retrievals = [
+                "Explain the paper problem and motivation.",
+                "Summarize the method at a beginner-friendly level.",
+            ]
+
+        slides = [
+            SlideContent(
+                slide_type="title",
+                title=paper_title,
+                bullets=["Problem, method, and results overview"],
+                notes="Open with the paper framing.",
+                citations=[],
+                layout_hint="title",
+                visual_intent="hero",
+            ),
+            SlideContent(
+                slide_type="background",
+                title="Problem & Motivation",
+                bullets=bullets_from_retrievals[:2],
+                notes="Explain why this paper matters.",
+                citations=citations[:2],
+                layout_hint="content",
+                visual_intent="problem framing",
+            ),
+            SlideContent(
+                slide_type="method",
+                title="Core Method",
+                bullets=bullets_from_retrievals[:3],
+                notes="Walk through the main pipeline.",
+                citations=citations[:3],
+                layout_hint="content",
+                visual_intent="method summary",
+            ),
+            SlideContent(
+                slide_type="experiments",
+                title="Experiments & Results",
+                bullets=(bullets_from_retrievals[1:4] or bullets_from_retrievals[:2]),
+                notes="Highlight the most important evidence.",
+                citations=citations[:3],
+                layout_hint="content",
+                visual_intent="results summary",
+            ),
+            SlideContent(
+                slide_type="conclusion",
+                title="Takeaways",
+                bullets=[
+                    "Summarize the main contribution.",
+                    "Mention one limitation or next step.",
+                ],
+                notes="Close with a balanced summary.",
+                citations=citations[:1],
+                layout_hint="content",
+                visual_intent="closing summary",
+            ),
+        ]
+        return DeckContent(
+            paper_id=paper_id,
+            title=f"{paper_title} Presentation",
+            audience=audience,
+            slides=slides,
+        )
+
     def _find_last_ai_without_tool_calls(self, messages: list[BaseMessage]) -> AIMessage | None:
         for message in reversed(messages):
             if isinstance(message, AIMessage) and not message.tool_calls:
@@ -620,6 +896,21 @@ class PaperChatAgent:
                         )
 
             if node_name == "tools":
+                ppt_result = update.get("latest_ppt_result")
+                if ppt_result:
+                    yield AgentEvent(
+                        "ppt_generated",
+                        f"Generated PPT for {ppt_result['title']}.",
+                        {
+                            "paper_id": ppt_result["paper_id"],
+                            "title": ppt_result["title"],
+                            "content_path": ppt_result["content_path"],
+                            "ppt_path": ppt_result["ppt_path"],
+                            "slide_count": ppt_result["slide_count"],
+                            "renderer": ppt_result["renderer"],
+                            "session_id": session_id,
+                        },
+                    )
                 catalog_hits = update.get("latest_paper_catalog", [])
                 if catalog_hits:
                     yield AgentEvent(

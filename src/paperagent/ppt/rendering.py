@@ -17,7 +17,6 @@ class PPTRenderService:
         paper_id: str,
         deck_title: str,
         slides: list[SlideContent],
-        template_path: Path | None = None,
     ) -> RenderResult:
         runtime_info = self._detect_runtime()
         if not runtime_info["available"]:
@@ -63,7 +62,6 @@ class PPTRenderService:
                     "title": deck_title,
                     "content_path": str(content_path),
                     "output_path": str(output_path),
-                    "template_path": str(template_path) if template_path else None,
                 },
                 ensure_ascii=False,
                 indent=2,

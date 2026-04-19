@@ -216,24 +216,24 @@ General chat mode behavior:
 ### 8. Generate a PPT
 
 ```powershell
-python -m paperagent.cli.app pptgen --paper-id <paper_id>
+python -m paperagent.cli.app chat ask --paper-id <paper_id> --question "给这篇论文做个 PPT"
 ```
 
-You can also let the CLI infer the paper from a natural-language request:
+You can also let PaperAgent infer the paper in general chat mode:
 
 ```powershell
-python -m paperagent.cli.app pptgen --prompt "对 tag-wm 做 ppt"
+python -m paperagent.cli.app chat ask --question "帮我给 reducing inversion error 做个 PPT"
 ```
 
-This now follows a three-step pipeline:
+The agent now handles PPT generation inside the chat loop:
 
-- plan: build a slide plan from the paper title, abstract, summary, and keywords
-- enrich: retrieve paper evidence for each slide and rewrite it into slide bullets
-- render: pass the structured slide content to the external PPT skill renderer
+- detect that the latest request is asking for a PPT
+- resolve the target paper from the scoped chat, explicit mention, or catalog top hit
+- load the project PPT generation skill into the agent prompt
+- let the LLM produce structured slide content and call the PPT render tool
 
 This creates:
 
-- a `deck_plan.json` planning artifact
 - a `deck_content.json` slide-content artifact
 - an `output.pptx` final deck
 
@@ -316,8 +316,8 @@ python -m paperagent.cli.app doctor
 python -m paperagent.cli.app ingest --pdf path\to\paper.pdf
 python -m paperagent.cli.app chat ask --paper-id <paper_id> --question "Explain the method"
 python -m paperagent.cli.app chat ask --question "hello"
+python -m paperagent.cli.app chat ask --paper-id <paper_id> --question "给这篇论文做个 PPT"
 python -m paperagent.cli.app db profiles
-python -m paperagent.cli.app pptgen --paper-id <paper_id>
 python -m paperagent.cli.app serve-api
 ```
 

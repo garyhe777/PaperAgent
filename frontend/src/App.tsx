@@ -111,6 +111,7 @@ export default function App() {
     setBusy(true);
     setEvents([]);
     setAnswer("");
+    setPptResult("");
     try {
       const response = await fetch(`${API_BASE}/chat/stream`, {
         method: "POST",
@@ -126,30 +127,11 @@ export default function App() {
         if (item.event_type === "final_answer_stream") {
           setAnswer((current) => current + item.message);
         }
+        if (item.event_type === "ppt_generated") {
+          const pptPath = String(item.payload?.ppt_path ?? "");
+          setPptResult(pptPath);
+        }
       });
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function handlePpt() {
-    if (!selectedPaperId) {
-      return;
-    }
-    setBusy(true);
-    try {
-      const response = await fetch(`${API_BASE}/ppt`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          paper_id: selectedPaperId,
-        }),
-      });
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.detail ?? "PPT generation failed");
-      }
-      setPptResult(payload.ppt_path);
     } finally {
       setBusy(false);
     }
@@ -162,7 +144,7 @@ export default function App() {
           <p className="eyebrow">PaperAgent</p>
           <h1>论文讲解与 PPT 生成助手</h1>
           <p className="subtitle">
-            先导入论文，再进行混合检索问答，最后一键导出讲解型 PPT。
+            先导入论文，再通过自然语言对话触发检索讲解或讲解型 PPT 生成。
           </p>
         </div>
       </header>
@@ -226,6 +208,9 @@ export default function App() {
               开始流式讲解
             </button>
           </form>
+          <p className="ppt-result">
+            {pptResult || "如果想生成 PPT，请直接在问题里输入“给这篇论文做个 PPT”。"}
+          </p>
           <div className="chat-grid">
             <div className="chat-box">
               <h3>最终回答</h3>
@@ -244,13 +229,6 @@ export default function App() {
           </div>
         </section>
 
-        <section className="panel">
-          <h2>4. 生成 PPT</h2>
-          <button disabled={busy || !selectedPaperId} onClick={() => void handlePpt()} type="button">
-            为当前论文生成 PPT
-          </button>
-          <p className="ppt-result">{pptResult || "生成后会显示本地 PPT 路径。"}</p>
-        </section>
       </main>
     </div>
   );

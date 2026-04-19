@@ -175,15 +175,72 @@ def test_session_context_is_persisted_across_turns(container: ServiceContainer, 
     assert len(persisted_messages) >= 4
 
 
-def test_ppt_generation_creates_files(container: ServiceContainer, sample_pdf: Path):
+def test_scoped_chat_can_generate_ppt(container: ServiceContainer, sample_pdf: Path):
     result = container.ingest_service.ingest(pdf_path=sample_pdf)
     _patch_skill_renderer(container)
-    deck = container.ppt_service.generate(result["paper_id"])
-    assert Path(deck["ppt_path"]).exists()
-    assert Path(deck["plan_path"]).exists()
-    assert Path(deck["content_path"]).exists()
-    assert deck["slide_count"] >= 3
-    assert deck["renderer"] == "skill"
+    events = list(
+        container.chat_agent.ask(
+            paper_id=result["paper_id"],
+            question="给这篇论文做个 PPT",
+            style="beginner",
+        )
+    )
+    tool_names = [event.payload.get("tool_name") for event in events if event.event_type == "tool_called"]
+    ppt_event = next(event for event in events if event.event_type == "ppt_generated")
+    assert "search_paper_context" in tool_names
+    assert "generate_ppt" in tool_names
+    assert Path(str(ppt_event.payload["ppt_path"])).exists()
+    assert Path(str(ppt_event.payload["content_path"])).exists()
+    assert int(ppt_event.payload["slide_count"]) >= 3
+    assert ppt_event.payload["renderer"] == "skill"
+
+
+def test_general_chat_can_generate_ppt_from_top_catalog_hit(container: ServiceContainer):
+    _seed_catalog_paper(
+        container,
+        paper_id="roar",
+        title="ROAR: Reducing Inversion Error in Generative Image Watermarking",
+        abstract="A watermarking paper focused on reducing inversion error.",
+        summary="A paper about reducing inversion error in watermarking.",
+        keywords=["watermarking", "inversion"],
+        chunks=[
+            ChunkRecord(
+                paper_id="roar",
+                chunk_id="roar-0001",
+                section_title="Method",
+                page_number=1,
+                content="ROAR reduces inversion error with a robust inversion-aware watermarking pipeline.",
+                token_count=12,
+            )
+        ],
+    )
+    _patch_skill_renderer(container)
+    events = list(
+        container.chat_agent.ask(
+            paper_id=None,
+            question="帮我给 reducing inversion error 做个ppt",
+            style="beginner",
+        )
+    )
+    tool_names = [event.payload.get("tool_name") for event in events if event.event_type == "tool_called"]
+    ppt_event = next(event for event in events if event.event_type == "ppt_generated")
+    assert "search_paper_context" in tool_names
+    assert "generate_ppt" in tool_names
+    assert ppt_event.payload["paper_id"] == "roar"
+
+
+def test_chat_ppt_request_without_resolved_paper_returns_clear_error(container: ServiceContainer):
+    events = list(
+        container.chat_agent.ask(
+            paper_id=None,
+            question="帮我做个 PPT",
+            style="beginner",
+        )
+    )
+    tool_names = [event.payload.get("tool_name") for event in events if event.event_type == "tool_called"]
+    answer = "".join(event.message for event in events if event.event_type == "final_answer_stream")
+    assert "generate_ppt" not in tool_names
+    assert "couldn't determine" in answer.lower()
 
 
 def test_ingest_url_and_api_endpoints(container: ServiceContainer, sample_pdf: Path, tmp_path: Path):
@@ -217,28 +274,19 @@ def test_ingest_url_and_api_endpoints(container: ServiceContainer, sample_pdf: P
         assert "profile_status" in payload
 
         _patch_skill_renderer(container)
-        ppt_response = client.post(
-            "/ppt",
-            json={"paper_id": ingest_result["paper_id"], "template_path": None},
-        )
-        assert ppt_response.status_code == 200
-        ppt_payload = ppt_response.json()
-        assert "plan_path" in ppt_payload
-        assert "content_path" in ppt_payload
-        assert ppt_payload["renderer"] == "skill"
-
         stream_response = client.post(
             "/chat/stream",
             json={
                 "session_id": None,
                 "paper_id": ingest_result["paper_id"],
-                "question": "What problem does the paper solve?",
+                "question": "Give me a PPT for this paper",
                 "style": "beginner",
             },
         )
         assert stream_response.status_code == 200
         assert "text/event-stream" in stream_response.headers["content-type"]
         assert "data:" in stream_response.text
+        assert '"event_type": "ppt_generated"' in stream_response.text
     finally:
         server.shutdown()
         server.server_close()

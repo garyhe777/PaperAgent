@@ -92,38 +92,6 @@ class ChatMessageRecord:
 
 
 @dataclass(slots=True)
-class SlideOutline:
-    title: str
-    bullets: list[str]
-    notes: str = ""
-
-
-@dataclass(slots=True)
-class DeckOutline:
-    paper_id: str
-    title: str
-    slides: list[SlideOutline]
-
-
-@dataclass(slots=True)
-class SlidePlan:
-    slide_type: str
-    title: str
-    goal: str
-    questions_to_search: list[str]
-    layout_hint: str
-    visual_intent: str
-
-
-@dataclass(slots=True)
-class DeckPlan:
-    paper_id: str
-    title: str
-    audience: str
-    slides: list[SlidePlan]
-
-
-@dataclass(slots=True)
 class SlideContent:
     slide_type: str
     title: str
@@ -132,6 +100,14 @@ class SlideContent:
     citations: list[str]
     layout_hint: str = ""
     visual_intent: str = ""
+
+
+@dataclass(slots=True)
+class DeckContent:
+    paper_id: str
+    title: str
+    audience: str
+    slides: list[SlideContent]
 
 
 @dataclass(slots=True)
