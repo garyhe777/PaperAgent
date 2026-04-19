@@ -24,6 +24,17 @@ class PaperRecord:
 
 
 @dataclass(slots=True)
+class PaperProfileRecord:
+    paper_id: str
+    abstract_text: str
+    short_summary: str
+    keywords: list[str]
+    profile_status: str
+    profile_error: str | None
+    profile_updated_at: datetime
+
+
+@dataclass(slots=True)
 class ChunkRecord:
     paper_id: str
     chunk_id: str

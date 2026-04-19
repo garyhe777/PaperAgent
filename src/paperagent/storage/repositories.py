@@ -6,7 +6,13 @@ from sqlite3 import Row
 
 from langchain_core.messages import BaseMessage, message_to_dict, messages_from_dict
 
-from paperagent.schemas.models import ChatMessageRecord, ChatSessionRecord, ChunkRecord, PaperRecord
+from paperagent.schemas.models import (
+    ChatMessageRecord,
+    ChatSessionRecord,
+    ChunkRecord,
+    PaperProfileRecord,
+    PaperRecord,
+)
 from paperagent.storage.database import Database
 
 
@@ -33,6 +39,18 @@ def _chunk_from_row(row: Row) -> ChunkRecord:
         page_number=row["page_number"],
         content=row["content"],
         token_count=row["token_count"],
+    )
+
+
+def _paper_profile_from_row(row: Row) -> PaperProfileRecord:
+    return PaperProfileRecord(
+        paper_id=row["paper_id"],
+        abstract_text=row["abstract_text"],
+        short_summary=row["short_summary"],
+        keywords=json.loads(row["keywords_json"]),
+        profile_status=row["profile_status"],
+        profile_error=row["profile_error"],
+        profile_updated_at=datetime.fromisoformat(row["profile_updated_at"]),
     )
 
 
@@ -109,6 +127,49 @@ class PaperRepository:
                 "SELECT * FROM papers ORDER BY created_at DESC"
             ).fetchall()
         return [_paper_from_row(row) for row in rows]
+
+    def upsert_profile(self, profile: PaperProfileRecord) -> None:
+        with self.database.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO paper_profiles (
+                    paper_id, abstract_text, short_summary, keywords_json,
+                    profile_status, profile_error, profile_updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(paper_id) DO UPDATE SET
+                    abstract_text=excluded.abstract_text,
+                    short_summary=excluded.short_summary,
+                    keywords_json=excluded.keywords_json,
+                    profile_status=excluded.profile_status,
+                    profile_error=excluded.profile_error,
+                    profile_updated_at=excluded.profile_updated_at
+                """,
+                (
+                    profile.paper_id,
+                    profile.abstract_text,
+                    profile.short_summary,
+                    json.dumps(profile.keywords, ensure_ascii=False),
+                    profile.profile_status,
+                    profile.profile_error,
+                    profile.profile_updated_at.isoformat(),
+                ),
+            )
+
+    def get_profile(self, paper_id: str) -> PaperProfileRecord | None:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM paper_profiles WHERE paper_id = ?",
+                (paper_id,),
+            ).fetchone()
+        return _paper_profile_from_row(row) if row else None
+
+    def list_profiles(self) -> list[PaperProfileRecord]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM paper_profiles ORDER BY profile_updated_at DESC"
+            ).fetchall()
+        return [_paper_profile_from_row(row) for row in rows]
 
 
 class ChunkRepository:

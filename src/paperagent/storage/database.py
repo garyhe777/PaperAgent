@@ -32,6 +32,17 @@ CREATE TABLE IF NOT EXISTS chunks (
 
 CREATE INDEX IF NOT EXISTS idx_chunks_paper_id ON chunks(paper_id);
 
+CREATE TABLE IF NOT EXISTS paper_profiles (
+    paper_id TEXT PRIMARY KEY,
+    abstract_text TEXT NOT NULL,
+    short_summary TEXT NOT NULL,
+    keywords_json TEXT NOT NULL,
+    profile_status TEXT NOT NULL,
+    profile_error TEXT,
+    profile_updated_at TEXT NOT NULL,
+    FOREIGN KEY(paper_id) REFERENCES papers(paper_id)
+);
+
 CREATE TABLE IF NOT EXISTS chat_sessions (
     session_id TEXT PRIMARY KEY,
     paper_id TEXT,
