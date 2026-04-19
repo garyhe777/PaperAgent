@@ -33,6 +33,7 @@ class AgentState(TypedDict, total=False):
     latest_retrieval: list[RetrievalResult]
     latest_paper_catalog: list[PaperCatalogResult]
     latest_ppt_result: dict[str, Any] | None
+    latest_ppt_error: str | None
     tool_iterations: int
 
 
@@ -138,6 +139,7 @@ class PaperChatAgent:
             "latest_retrieval": [],
             "latest_paper_catalog": [],
             "latest_ppt_result": None,
+            "latest_ppt_error": None,
             "tool_iterations": 0,
         }
         final_state: AgentState | None = None
@@ -257,6 +259,7 @@ class PaperChatAgent:
         latest_retrieval: list[RetrievalResult] = []
         latest_paper_catalog: list[PaperCatalogResult] = []
         latest_ppt_result: dict[str, Any] | None = None
+        latest_ppt_error: str | None = None
         last_message = state["messages"][-1]
         if not isinstance(last_message, AIMessage):
             return {
@@ -264,6 +267,7 @@ class PaperChatAgent:
                 "latest_retrieval": [],
                 "latest_paper_catalog": [],
                 "latest_ppt_result": None,
+                "latest_ppt_error": None,
                 "tool_iterations": state.get("tool_iterations", 0) + 1,
             }
 
@@ -336,6 +340,8 @@ class PaperChatAgent:
 
             if tool_name == "generate_ppt":
                 content, latest_ppt_result = self._generate_ppt(tool_call.get("args", {}))
+                if not latest_ppt_result:
+                    latest_ppt_error = self._safe_tool_payload(content).get("error")
                 tool_messages.append(
                     ToolMessage(
                         content=content,
@@ -362,6 +368,7 @@ class PaperChatAgent:
             "latest_retrieval": latest_retrieval,
             "latest_paper_catalog": latest_paper_catalog,
             "latest_ppt_result": latest_ppt_result,
+            "latest_ppt_error": latest_ppt_error,
             "tool_iterations": state.get("tool_iterations", 0) + 1,
         }
 
@@ -1003,6 +1010,16 @@ class PaperChatAgent:
                             "ppt_path": ppt_result["ppt_path"],
                             "slide_count": ppt_result["slide_count"],
                             "renderer": ppt_result["renderer"],
+                            "session_id": session_id,
+                        },
+                    )
+                ppt_error = update.get("latest_ppt_error")
+                if ppt_error:
+                    yield AgentEvent(
+                        "ppt_failed",
+                        f"PPT generation failed: {ppt_error}",
+                        {
+                            "error": ppt_error,
                             "session_id": session_id,
                         },
                     )

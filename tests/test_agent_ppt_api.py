@@ -245,6 +245,34 @@ def test_chat_ppt_request_without_resolved_paper_returns_clear_error(container: 
     assert "couldn't determine" in answer.lower()
 
 
+def test_chat_ppt_failure_emits_error_event(container: ServiceContainer, sample_pdf: Path, monkeypatch):
+    result = container.ingest_service.ingest(pdf_path=sample_pdf)
+
+    def fake_generate_ppt(raw_args):
+        import json
+
+        return json.dumps(
+            {
+                "tool_name": "generate_ppt",
+                "paper_id": raw_args.get("paper_id", ""),
+                "error": "synthetic ppt failure",
+            },
+            ensure_ascii=False,
+        ), None
+
+    monkeypatch.setattr(container.chat_agent, "_generate_ppt", fake_generate_ppt)
+
+    events = list(
+        container.chat_agent.ask(
+            paper_id=result["paper_id"],
+            question="给这篇论文做个 PPT",
+            style="beginner",
+        )
+    )
+    failure_event = next(event for event in events if event.event_type == "ppt_failed")
+    assert "synthetic ppt failure" in failure_event.payload["error"]
+
+
 def test_ingest_url_and_api_endpoints(container: ServiceContainer, sample_pdf: Path, tmp_path: Path):
     handler = partial(SimpleHTTPRequestHandler, directory=str(sample_pdf.parent))
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)

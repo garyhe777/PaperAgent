@@ -2,27 +2,26 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from paperagent.schemas.models import SlideContent
 from paperagent.services import ServiceContainer
 
 
-def test_skill_renderer_reports_missing_runtime(container: ServiceContainer):
-    with pytest.raises(RuntimeError, match="PPT skill runtime is unavailable"):
-        container.ppt_render_service.render(
-            paper_id="paper-1",
-            deck_title="Test Deck",
-            slides=[
-                SlideContent(
-                    slide_type="title",
-                    title="Test Deck",
-                    bullets=["Bullet"],
-                    notes="Notes",
-                    citations=[],
-                )
-            ],
-        )
+def test_renderer_falls_back_to_python_pptx_when_skill_runtime_is_missing(container: ServiceContainer):
+    result = container.ppt_render_service.render(
+        paper_id="paper-1",
+        deck_title="Test Deck",
+        slides=[
+            SlideContent(
+                slide_type="title",
+                title="Test Deck",
+                bullets=["Bullet"],
+                notes="Notes",
+                citations=[],
+            )
+        ],
+    )
+    assert Path(result.ppt_path).exists()
+    assert result.renderer == "python-pptx"
 
 
 def test_skill_renderer_creates_output_when_runtime_and_builder_succeed(container: ServiceContainer, monkeypatch):
