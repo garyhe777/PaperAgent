@@ -1,12 +1,36 @@
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from pathlib import Path
 
 import fitz
 
+from paperagent.config import Settings
 
-class PDFMarkdownConverter:
+
+class BasePDFMarkdownConverter(ABC):
+    """Shared interface for all PDF-to-Markdown backends."""
+
+    backend_name: str = "base"
+
+    @abstractmethod
+    def convert(self, pdf_path: Path) -> tuple[str, str]:
+        """Return a paper title and markdown text."""
+
+    def infer_title(self, markdown_text: str, fallback: str) -> str:
+        for line in markdown_text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("## "):
+                return stripped[3:].strip()
+            if stripped.startswith("# "):
+                return stripped[2:].strip()
+        return fallback
+
+
+class PDFMarkdownConverter(BasePDFMarkdownConverter):
     """Convert a PDF into markdown with lightweight heading heuristics."""
+
+    backend_name = "pymupdf"
 
     def convert(self, pdf_path: Path) -> tuple[str, str]:
         document = fitz.open(pdf_path)
@@ -39,7 +63,7 @@ class PDFMarkdownConverter:
                 markdown_lines.append(self._format_line(text, max_size))
             markdown_lines.append("")
         markdown_text = "\n".join(markdown_lines).strip() + "\n"
-        normalized_title = self._infer_title(markdown_text, fallback=title)
+        normalized_title = self.infer_title(markdown_text, fallback=title)
         return normalized_title, markdown_text
 
     def _format_line(self, text: str, font_size: float) -> str:
@@ -51,9 +75,52 @@ class PDFMarkdownConverter:
             return f"### {text.rstrip(':')}"
         return text
 
-    def _infer_title(self, markdown_text: str, fallback: str) -> str:
-        for line in markdown_text.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("## "):
-                return stripped[3:].strip()
-        return fallback
+
+class DatalabPDFMarkdownConverter(BasePDFMarkdownConverter):
+    """Convert a PDF into markdown through the Datalab hosted parser."""
+
+    backend_name = "datalab"
+
+    def __init__(self, api_key: str, mode: str = "balanced") -> None:
+        if not api_key:
+            raise ValueError("Datalab backend requires PAPERAGENT_DATALAB_API_KEY.")
+        self.api_key = api_key
+        self.mode = mode
+
+    def convert(self, pdf_path: Path) -> tuple[str, str]:
+        try:
+            from datalab_sdk import ConvertOptions, DatalabClient
+        except ModuleNotFoundError as exc:  # pragma: no cover - depends on optional package
+            raise ModuleNotFoundError(
+                "Datalab backend requires the optional 'datalab_sdk' package in the active environment."
+            ) from exc
+
+        client = DatalabClient(api_key=self.api_key)
+        options = ConvertOptions(
+            output_format="markdown",
+            mode=self.mode,
+        )
+        result = client.convert(str(pdf_path), options=options)
+        markdown_text = (result.markdown or "").strip()
+        if not markdown_text:
+            raise ValueError("Datalab returned empty markdown.")
+        markdown_text = markdown_text + "\n"
+        title = self.infer_title(markdown_text, fallback=pdf_path.stem)
+        return title, markdown_text
+
+
+def build_pdf_markdown_converter(
+    settings: Settings,
+    backend: str | None = None,
+) -> BasePDFMarkdownConverter:
+    selected_backend = (backend or settings.pdf_backend).strip().lower()
+    if selected_backend == "pymupdf":
+        return PDFMarkdownConverter()
+    if selected_backend == "datalab":
+        return DatalabPDFMarkdownConverter(
+            api_key=settings.datalab_api_key or "",
+            mode=settings.datalab_mode,
+        )
+    raise ValueError(
+        f"Unsupported pdf backend '{selected_backend}'. Expected one of: pymupdf, datalab."
+    )

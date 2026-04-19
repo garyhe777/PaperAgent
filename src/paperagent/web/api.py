@@ -14,6 +14,7 @@ class IngestRequest(BaseModel):
     pdf: str | None = None
     url: str | None = None
     title: str | None = None
+    pdf_backend: str | None = None
 
 
 class ChatRequest(BaseModel):
@@ -76,6 +77,7 @@ def create_app(container) -> FastAPI:
                 pdf_path=Path(request.pdf) if request.pdf else None,
                 url=request.url,
                 override_title=request.title,
+                pdf_backend=request.pdf_backend,
             )
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     bm25_dir: Path = Field(default=Path(".paperagent_data/bm25"))
     deck_dir: Path = Field(default=Path(".paperagent_data/decks"))
     log_level: str = "INFO"
+    pdf_backend: str = "pymupdf"
 
     llm_backend: str = "openai"
     llm_model: str = "gpt-4.1-mini"
@@ -35,6 +36,9 @@ class Settings(BaseSettings):
     embedding_model: str = "text-embedding-3-small"
     embedding_base_url: str | None = None
     embedding_api_key: str | None = None
+
+    datalab_api_key: str | None = None
+    datalab_mode: str = "balanced"
 
     default_top_k: int = 5
     chunk_size: int = 1400

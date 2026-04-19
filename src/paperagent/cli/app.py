@@ -47,9 +47,19 @@ def ingest(
     pdf: Path | None = typer.Option(None, help="Local PDF path"),
     url: str | None = typer.Option(None, help="Remote PDF URL"),
     title: str | None = typer.Option(None, help="Optional custom paper title"),
+    pdf_backend: str | None = typer.Option(
+        None,
+        "--pdf-backend",
+        help="PDF to Markdown backend: pymupdf or datalab",
+    ),
 ) -> None:
     container = get_container()
-    result = container.ingest_service.ingest(pdf_path=pdf, url=url, override_title=title)
+    result = container.ingest_service.ingest(
+        pdf_path=pdf,
+        url=url,
+        override_title=title,
+        pdf_backend=pdf_backend,
+    )
     console.print_json(json.dumps(result))
 
 

@@ -34,6 +34,21 @@ Copy-Item .env.example .env
 
 PaperAgent reads configuration from `.env` automatically through `pydantic-settings`.
 
+PDF parsing backend is also configurable:
+
+```env
+PAPERAGENT_PDF_BACKEND=pymupdf
+PAPERAGENT_DATALAB_API_KEY=
+PAPERAGENT_DATALAB_MODE=balanced
+```
+
+Supported `PAPERAGENT_PDF_BACKEND` values:
+
+- `pymupdf`: the built-in local parser, fastest to get started
+- `datalab`: hosted PDF-to-Markdown conversion through Datalab, requires `PAPERAGENT_DATALAB_API_KEY`
+
+If you choose `datalab`, make sure the active Python environment also has the optional `datalab_sdk` package installed.
+
 ### 4. Configure your provider and API
 
 PaperAgent does not currently launch an interactive setup wizard on first run.
@@ -122,6 +137,8 @@ What `doctor` helps you confirm:
 - the local data directories can be created
 - the configured LLM backend/model values are loaded
 - the embedding backend/model values are loaded
+- the selected PDF backend is loaded
+- whether the optional `datalab_sdk` module and Datalab API key are available
 
 Important:
 
@@ -134,6 +151,12 @@ From a local PDF:
 
 ```powershell
 python -m paperagent.cli.app ingest --pdf path\to\paper.pdf
+```
+
+If you want to override the configured PDF backend for one run:
+
+```powershell
+python -m paperagent.cli.app ingest --pdf path\to\paper.pdf --pdf-backend datalab
 ```
 
 Or from a URL:
@@ -149,6 +172,12 @@ What happens internally:
 - paper metadata is written into SQLite
 - chunks are written into SQLite
 - Chroma and BM25 indexes are built for retrieval
+
+The Markdown conversion backend is chosen in this order:
+
+1. `ingest --pdf-backend ...` CLI option, if provided
+2. `PAPERAGENT_PDF_BACKEND` from `.env`
+3. default fallback: `pymupdf`
 
 ### 7. Ask questions about the paper
 

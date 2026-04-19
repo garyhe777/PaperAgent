@@ -12,7 +12,7 @@ import httpx
 
 from paperagent.config import Settings
 from paperagent.ingest.chunking import chunk_sections, split_markdown_into_sections
-from paperagent.ingest.pdf_parser import PDFMarkdownConverter
+from paperagent.ingest.pdf_parser import build_pdf_markdown_converter
 from paperagent.schemas.models import ChunkRecord, PaperRecord
 from paperagent.storage.repositories import ChunkRepository, PaperRepository
 
@@ -29,13 +29,13 @@ class IngestService:
         self.paper_repository = paper_repository
         self.chunk_repository = chunk_repository
         self.retrieval_service = retrieval_service
-        self.converter = PDFMarkdownConverter()
 
     def ingest(
         self,
         pdf_path: Path | None = None,
         url: str | None = None,
         override_title: str | None = None,
+        pdf_backend: str | None = None,
     ) -> dict:
         if not pdf_path and not url:
             raise ValueError("Either pdf_path or url must be provided.")
@@ -44,6 +44,7 @@ class IngestService:
 
         source_value = str(pdf_path) if pdf_path else str(url)
         source_type = "pdf" if pdf_path else "url"
+        selected_backend = (pdf_backend or self.settings.pdf_backend).strip().lower()
         paper_id = self._paper_id_for(source_value)
         paper_dir = self.settings.storage_dir / paper_id
         paper_dir.mkdir(parents=True, exist_ok=True)
@@ -62,13 +63,19 @@ class IngestService:
             updated_at=now,
         )
         existing = self.paper_repository.get_paper(paper_id)
-        if existing and Path(existing.pdf_path).exists() and Path(existing.md_path).exists():
+        if (
+            existing
+            and Path(existing.pdf_path).exists()
+            and Path(existing.md_path).exists()
+            and self._cached_backend_for(paper_dir) == selected_backend
+        ):
             return {
                 "paper_id": existing.paper_id,
                 "title": existing.title,
                 "status": "cached",
                 "pdf_path": existing.pdf_path,
                 "md_path": existing.md_path,
+                "pdf_backend": selected_backend,
             }
 
         self.paper_repository.upsert_paper(record)
@@ -79,9 +86,11 @@ class IngestService:
                 shutil.copyfile(pdf_path, final_pdf_path)
             else:
                 self._download_pdf(url or "", final_pdf_path)
-            title, markdown_text = self.converter.convert(final_pdf_path)
+            converter = build_pdf_markdown_converter(self.settings, backend=selected_backend)
+            title, markdown_text = converter.convert(final_pdf_path)
             markdown_path = paper_dir / "paper.md"
             markdown_path.write_text(markdown_text, encoding="utf-8")
+            self._write_ingest_meta(paper_dir, selected_backend)
 
             sections = split_markdown_into_sections(markdown_text)
             chunk_blocks = chunk_sections(
@@ -123,6 +132,7 @@ class IngestService:
                 "pdf_path": completed.pdf_path,
                 "md_path": completed.md_path,
                 "chunk_count": len(chunks),
+                "pdf_backend": selected_backend,
             }
         except Exception as exc:  # noqa: BLE001
             failed = PaperRecord(
@@ -183,6 +193,36 @@ class IngestService:
                 ),
             )
         )
+        datalab_enabled = self.settings.pdf_backend == "datalab"
+        try:
+            importlib.import_module("datalab_sdk")
+            datalab_module_status = "OK"
+            datalab_module_detail = "module available"
+        except ModuleNotFoundError as exc:
+            datalab_module_status = "MISSING"
+            datalab_module_detail = str(exc)
+
+        report.append(("datalab_sdk", datalab_module_status, datalab_module_detail))
+        report.append(
+            (
+                "pdf_backend",
+                "OK",
+                json.dumps(
+                    {
+                        "backend": self.settings.pdf_backend,
+                        "datalab_mode": self.settings.datalab_mode,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        )
+        report.append(
+            (
+                "datalab_api_key",
+                "OK" if self.settings.datalab_api_key else ("MISSING" if datalab_enabled else "OPTIONAL"),
+                "configured" if self.settings.datalab_api_key else "not configured",
+            )
+        )
         return report
 
     def _download_pdf(self, url: str, output_path: Path) -> None:
@@ -197,3 +237,21 @@ class IngestService:
         digest = hashlib.sha1(source_value.encode("utf-8")).hexdigest()[:8]
         safe = "".join(char if char.isalnum() else "-" for char in base.lower()).strip("-")
         return f"{safe or 'paper'}-{digest}"
+
+    def _cached_backend_for(self, paper_dir: Path) -> str | None:
+        meta_path = paper_dir / "ingest_meta.json"
+        if not meta_path.exists():
+            return self.settings.pdf_backend
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return None
+        backend = str(meta.get("pdf_backend", "")).strip().lower()
+        return backend or None
+
+    def _write_ingest_meta(self, paper_dir: Path, pdf_backend: str) -> None:
+        meta_path = paper_dir / "ingest_meta.json"
+        meta_path.write_text(
+            json.dumps({"pdf_backend": pdf_backend}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
