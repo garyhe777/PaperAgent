@@ -177,11 +177,13 @@ def test_session_context_is_persisted_across_turns(container: ServiceContainer, 
 
 def test_ppt_generation_creates_files(container: ServiceContainer, sample_pdf: Path):
     result = container.ingest_service.ingest(pdf_path=sample_pdf)
+    _patch_skill_renderer(container)
     deck = container.ppt_service.generate(result["paper_id"])
     assert Path(deck["ppt_path"]).exists()
     assert Path(deck["plan_path"]).exists()
     assert Path(deck["content_path"]).exists()
     assert deck["slide_count"] >= 3
+    assert deck["renderer"] == "skill"
 
 
 def test_ingest_url_and_api_endpoints(container: ServiceContainer, sample_pdf: Path, tmp_path: Path):
@@ -213,6 +215,17 @@ def test_ingest_url_and_api_endpoints(container: ServiceContainer, sample_pdf: P
         assert "short_summary" in payload
         assert "keywords" in payload
         assert "profile_status" in payload
+
+        _patch_skill_renderer(container)
+        ppt_response = client.post(
+            "/ppt",
+            json={"paper_id": ingest_result["paper_id"], "template_path": None},
+        )
+        assert ppt_response.status_code == 200
+        ppt_payload = ppt_response.json()
+        assert "plan_path" in ppt_payload
+        assert "content_path" in ppt_payload
+        assert ppt_payload["renderer"] == "skill"
 
         stream_response = client.post(
             "/chat/stream",
@@ -271,3 +284,17 @@ def _seed_catalog_paper(
     if chunks:
         container.chunk_repository.replace_chunks(paper_id, chunks)
         container.retrieval_service.index_paper(paper_id, chunks)
+
+
+def _patch_skill_renderer(container: ServiceContainer) -> None:
+    def fake_detect_runtime():
+        return {"available": True}
+
+    def fake_execute_builder(builder_script: Path, render_config_path: Path, work_dir: Path):
+        import json
+
+        config = json.loads(render_config_path.read_text(encoding="utf-8"))
+        Path(config["output_path"]).write_bytes(b"fake-pptx")
+
+    container.ppt_render_service._detect_runtime = fake_detect_runtime  # type: ignore[method-assign]
+    container.ppt_render_service._execute_builder = fake_execute_builder  # type: ignore[method-assign]

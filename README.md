@@ -219,10 +219,17 @@ General chat mode behavior:
 python -m paperagent.cli.app ppt generate --paper-id <paper_id>
 ```
 
+This now follows a three-step pipeline:
+
+- plan: build a slide plan from the paper title, abstract, summary, and keywords
+- enrich: retrieve paper evidence for each slide and rewrite it into slide bullets
+- render: pass the structured slide content to the external PPT skill renderer
+
 This creates:
 
-- a `.pptx` file
-- a `deck.json` intermediate outline for inspection and later frontend reuse
+- a `deck_plan.json` planning artifact
+- a `deck_content.json` slide-content artifact
+- an `output.pptx` final deck
 
 ### 9. Run the API and frontend
 
@@ -344,3 +351,9 @@ PAPERAGENT_EMBEDDING_BACKEND=hash
 ```
 
 That is the simplest zero-to-running configuration today.
+
+### PPT generation fails with a skill runtime error
+
+The new PPT pipeline depends on an external JS/skill runtime for the final `.pptx` render step.
+
+If that runtime is missing, PaperAgent will fail with a clear render error instead of silently falling back to the old Python renderer.

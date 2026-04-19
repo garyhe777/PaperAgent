@@ -86,6 +86,7 @@ class ServiceContainer:
             paper_repository=self.paper_repository,
             ppt_planning_service=self.ppt_planning_service,
             ppt_enrichment_service=self.ppt_enrichment_service,
+            ppt_render_service=self.ppt_render_service,
         )
 
     @cached_property
