@@ -56,6 +56,15 @@ class RetrievalResult:
 
 
 @dataclass(slots=True)
+class PaperCatalogResult:
+    paper_id: str
+    title: str
+    short_summary: str
+    keywords: list[str]
+    score: float
+
+
+@dataclass(slots=True)
 class AgentEvent:
     event_type: str
     message: str

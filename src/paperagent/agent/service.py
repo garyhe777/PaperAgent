@@ -36,12 +36,14 @@ class PaperChatAgent:
         chat_session_repository: ChatSessionRepository,
         chat_message_repository: ChatMessageRepository,
         retrieval_service,
+        paper_catalog_service=None,
     ) -> None:
         self.settings = settings
         self.paper_repository = paper_repository
         self.chat_session_repository = chat_session_repository
         self.chat_message_repository = chat_message_repository
         self.retrieval_service = retrieval_service
+        self.paper_catalog_service = paper_catalog_service
         self.prompt_loader = PromptLoader()
         self.max_tool_iterations = 4
         self.tools = self._build_tools()

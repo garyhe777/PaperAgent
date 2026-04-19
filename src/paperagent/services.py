@@ -5,6 +5,7 @@ from functools import cached_property
 from paperagent.agent.service import PaperChatAgent
 from paperagent.config import Settings
 from paperagent.ingest.service import IngestService
+from paperagent.retrieval.catalog_service import PaperCatalogSearchService
 from paperagent.ppt.service import PPTService
 from paperagent.retrieval.service import HybridRetrievalService
 from paperagent.storage.database import Database
@@ -52,6 +53,10 @@ class ServiceContainer:
         )
 
     @cached_property
+    def paper_catalog_service(self) -> PaperCatalogSearchService:
+        return PaperCatalogSearchService(self.paper_repository)
+
+    @cached_property
     def ingest_service(self) -> IngestService:
         return IngestService(
             settings=self.settings,
@@ -68,6 +73,7 @@ class ServiceContainer:
             chat_session_repository=self.chat_session_repository,
             chat_message_repository=self.chat_message_repository,
             retrieval_service=self.retrieval_service,
+            paper_catalog_service=self.paper_catalog_service,
         )
 
     @cached_property
