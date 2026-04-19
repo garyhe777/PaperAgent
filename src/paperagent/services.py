@@ -6,6 +6,7 @@ from paperagent.agent.service import PaperChatAgent
 from paperagent.config import Settings
 from paperagent.ingest.service import IngestService
 from paperagent.retrieval.catalog_service import PaperCatalogSearchService
+from paperagent.ppt.enrichment import PPTEnrichmentService
 from paperagent.ppt.planning import PPTPlanningService
 from paperagent.ppt.service import PPTService
 from paperagent.retrieval.service import HybridRetrievalService
@@ -90,4 +91,11 @@ class ServiceContainer:
         return PPTPlanningService(
             settings=self.settings,
             paper_repository=self.paper_repository,
+        )
+
+    @cached_property
+    def ppt_enrichment_service(self) -> PPTEnrichmentService:
+        return PPTEnrichmentService(
+            settings=self.settings,
+            retrieval_service=self.retrieval_service,
         )
