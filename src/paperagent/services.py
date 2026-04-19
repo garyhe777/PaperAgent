@@ -8,7 +8,12 @@ from paperagent.ingest.service import IngestService
 from paperagent.ppt.service import PPTService
 from paperagent.retrieval.service import HybridRetrievalService
 from paperagent.storage.database import Database
-from paperagent.storage.repositories import ChunkRepository, PaperRepository
+from paperagent.storage.repositories import (
+    ChatMessageRepository,
+    ChatSessionRepository,
+    ChunkRepository,
+    PaperRepository,
+)
 
 
 class ServiceContainer:
@@ -32,6 +37,14 @@ class ServiceContainer:
         return ChunkRepository(self.database)
 
     @cached_property
+    def chat_session_repository(self) -> ChatSessionRepository:
+        return ChatSessionRepository(self.database)
+
+    @cached_property
+    def chat_message_repository(self) -> ChatMessageRepository:
+        return ChatMessageRepository(self.database)
+
+    @cached_property
     def retrieval_service(self) -> HybridRetrievalService:
         return HybridRetrievalService(
             settings=self.settings,
@@ -52,6 +65,8 @@ class ServiceContainer:
         return PaperChatAgent(
             settings=self.settings,
             paper_repository=self.paper_repository,
+            chat_session_repository=self.chat_session_repository,
+            chat_message_repository=self.chat_message_repository,
             retrieval_service=self.retrieval_service,
         )
 

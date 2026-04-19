@@ -37,6 +37,9 @@ paperagent = "paperagent.cli.app:app"
 [tool.setuptools]
 package-dir = {"" = "src"}
 
+[tool.setuptools.package-data]
+paperagent = ["prompts/*.txt"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 

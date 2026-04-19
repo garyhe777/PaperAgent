@@ -24,6 +24,11 @@ def test_chat_agent_streams_answer(container: ServiceContainer, sample_pdf: Path
     assert "agent_started" in event_types
     assert "rag_hit" in event_types
     assert "final_answer_done" in event_types
+    session_events = [event for event in events if event.event_type == "session_created"]
+    assert session_events
+    session_id = session_events[0].payload["session_id"]
+    assert container.chat_session_repository.get_session(str(session_id)) is not None
+    assert container.chat_message_repository.list_messages(str(session_id))
 
 
 def test_general_chat_skips_retrieval_for_greeting(container: ServiceContainer):
@@ -52,6 +57,32 @@ def test_general_chat_can_search_database_when_needed(container: ServiceContaine
     event_types = [event.event_type for event in events]
     assert result["paper_id"]
     assert "rag_hit" in event_types
+
+
+def test_session_context_is_persisted_across_turns(container: ServiceContainer, sample_pdf: Path):
+    ingest_result = container.ingest_service.ingest(pdf_path=sample_pdf)
+    first_events = list(
+        container.chat_agent.ask(
+            paper_id=ingest_result["paper_id"],
+            question="Explain the method",
+            style="beginner",
+        )
+    )
+    session_id = str(
+        next(event for event in first_events if event.event_type == "session_created").payload["session_id"]
+    )
+
+    second_events = list(
+        container.chat_agent.ask(
+            paper_id=None,
+            session_id=session_id,
+            question="Continue and summarize the experiment part",
+            style="beginner",
+        )
+    )
+    assert any(event.event_type == "session_loaded" for event in second_events)
+    persisted_messages = container.chat_message_repository.list_message_records(session_id)
+    assert len(persisted_messages) >= 4
 
 
 def test_ppt_generation_creates_files(container: ServiceContainer, sample_pdf: Path):
@@ -87,6 +118,7 @@ def test_ingest_url_and_api_endpoints(container: ServiceContainer, sample_pdf: P
         stream_response = client.post(
             "/chat/stream",
             json={
+                "session_id": None,
                 "paper_id": ingest_result["paper_id"],
                 "question": "What problem does the paper solve?",
                 "style": "beginner",

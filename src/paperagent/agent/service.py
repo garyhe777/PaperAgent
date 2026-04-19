@@ -1,202 +1,377 @@
 from __future__ import annotations
 
 import json
-from typing import Iterable, Iterator, TypedDict
+from datetime import datetime
+from typing import Annotated, Iterator, TypedDict
+from uuid import uuid4
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import messages_to_dict
+from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.message import add_messages
+from langgraph.prebuilt import InjectedState, ToolNode
 
+from paperagent.agent.prompts import PromptLoader
 from paperagent.config import Settings
-from paperagent.schemas.models import AgentEvent, RetrievalResult
-from paperagent.storage.repositories import PaperRepository
+from paperagent.schemas.models import AgentEvent, ChatSessionRecord, RetrievalResult
+from paperagent.storage.repositories import ChatMessageRepository, ChatSessionRepository, PaperRepository
 
 
 class AgentState(TypedDict, total=False):
+    messages: Annotated[list[BaseMessage], add_messages]
+    session_id: str
     paper_id: str | None
     paper_title: str
-    question: str
     style: str
     chat_mode: str
-    should_search: bool
-    search_query: str
-    evidence: list[RetrievalResult]
-    answer: str
+    latest_retrieval: list[RetrievalResult]
+    tool_iterations: int
 
 
 class PaperChatAgent:
-    def __init__(self, settings: Settings, paper_repository: PaperRepository, retrieval_service) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        paper_repository: PaperRepository,
+        chat_session_repository: ChatSessionRepository,
+        chat_message_repository: ChatMessageRepository,
+        retrieval_service,
+    ) -> None:
         self.settings = settings
         self.paper_repository = paper_repository
+        self.chat_session_repository = chat_session_repository
+        self.chat_message_repository = chat_message_repository
         self.retrieval_service = retrieval_service
+        self.prompt_loader = PromptLoader()
+        self.max_tool_iterations = 4
+        self.tools = self._build_tools()
+        self.tool_node = ToolNode(self.tools)
         self.graph = self._build_graph()
 
-    def ask(self, paper_id: str | None, question: str, style: str = "beginner") -> Iterator[AgentEvent]:
-        paper = self.paper_repository.get_paper(paper_id) if paper_id else None
-        if paper_id and not paper:
-            yield AgentEvent("error", f"Paper {paper_id} not found.")
+    def ask(
+        self,
+        paper_id: str | None,
+        question: str,
+        style: str = "beginner",
+        session_id: str | None = None,
+    ) -> Iterator[AgentEvent]:
+        session, created = self._prepare_session(
+            requested_session_id=session_id,
+            requested_paper_id=paper_id,
+            question=question,
+            style=style,
+        )
+        effective_paper_id = session.paper_id
+        paper = self.paper_repository.get_paper(effective_paper_id) if effective_paper_id else None
+        if effective_paper_id and not paper:
+            yield AgentEvent("error", f"Paper {effective_paper_id} not found.")
             return
+
+        event_type = "session_created" if created else "session_loaded"
+        yield AgentEvent(
+            event_type,
+            f"Using session {session.session_id}",
+            {
+                "session_id": session.session_id,
+                "paper_id": session.paper_id,
+                "style": session.style,
+            },
+        )
 
         chat_mode = "paper" if paper else "general"
         title = paper.title if paper else "general chat"
         yield AgentEvent("agent_started", f"Preparing answer for {title}")
+
+        history = self.chat_message_repository.list_messages(session.session_id)
+        initial_messages = history + [HumanMessage(content=question)]
         state: AgentState = {
-            "paper_id": paper_id,
-            "paper_title": paper.title if paper else "General knowledge and indexed paper database",
-            "question": question,
-            "style": style,
+            "session_id": session.session_id,
+            "paper_id": effective_paper_id,
+            "paper_title": paper.title if paper else "Indexed paper database",
+            "style": session.style,
             "chat_mode": chat_mode,
+            "messages": initial_messages,
+            "latest_retrieval": [],
+            "tool_iterations": 0,
         }
         result = self.graph.invoke(state)
-        if result.get("should_search") and result.get("evidence"):
-            evidence = result.get("evidence", [])
+
+        new_messages = result["messages"][len(history):]
+        self.chat_message_repository.append_messages(session.session_id, new_messages)
+        self._touch_session(session, paper_id=effective_paper_id, style=session.style)
+
+        for message in new_messages:
+            if isinstance(message, AIMessage) and message.tool_calls:
+                for tool_call in message.tool_calls:
+                    yield AgentEvent(
+                        "tool_called",
+                        f"Calling tool {tool_call['name']}",
+                        {
+                            "tool_name": tool_call["name"],
+                            "args": tool_call.get("args", {}),
+                            "session_id": session.session_id,
+                        },
+                    )
+
+        retrievals = result.get("latest_retrieval", [])
+        if retrievals:
             yield AgentEvent(
                 "rag_hit",
-                f"Retrieved {len(evidence)} relevant chunks.",
+                f"Retrieved {len(retrievals)} relevant chunks.",
                 {
                     "chunks": [
                         {
+                            "paper_id": item.paper_id,
                             "chunk_id": item.chunk_id,
                             "section_title": item.section_title,
                             "page_number": item.page_number,
                             "preview": item.content[:160],
                         }
-                        for item in evidence
-                    ]
+                        for item in retrievals
+                    ],
+                    "session_id": session.session_id,
                 },
             )
-        yield from self._stream_answer(result.get("answer", ""))
+
+        final_message = self._find_last_ai_without_tool_calls(result["messages"])
+        answer = final_message.content if final_message else ""
+        yield from self._stream_answer(answer, session.session_id)
 
     def _build_graph(self):
         graph = StateGraph(AgentState)
-        graph.add_node("decide", self._decide)
-        graph.add_node("search", self._search)
-        graph.add_node("answer", self._answer)
-        graph.add_edge(START, "decide")
+        graph.add_node("agent", self._agent_step)
+        graph.add_node("tools", self._run_tools)
+        graph.add_edge(START, "agent")
         graph.add_conditional_edges(
-            "decide",
-            lambda state: "search" if state.get("should_search") else "answer",
-            {"search": "search", "answer": "answer"},
+            "agent",
+            self._route_after_agent,
+            {"tools": "tools", "end": END},
         )
-        graph.add_edge("search", "answer")
-        graph.add_edge("answer", END)
+        graph.add_edge("tools", "agent")
         return graph.compile()
 
-    def _decide(self, state: AgentState) -> AgentState:
-        if self.settings.llm_backend == "mock":
-            greetings = {"hello", "hi", "hey", "你好", "您好"}
-            normalized = state["question"].strip().lower()
-            if normalized in greetings:
-                return {"should_search": False, "search_query": state["question"]}
-            should_search = any(
-                word in state["question"].lower()
-                for word in ["method", "experiment", "result", "contribution", "limitation", "detail"]
-            )
-            return {
-                "should_search": should_search,
-                "search_query": state["question"],
-            }
+    def _build_tools(self):
+        @tool
+        def search_paper_context(
+            query: str,
+            state: Annotated[dict, InjectedState],
+        ) -> str:
+            """Search imported paper chunks and return the most relevant evidence."""
 
-        llm = self._chat_model(temperature=0)
-        prompt = (
-            "You are a chat assistant that may optionally use an indexed paper database. Decide whether the user question needs database retrieval. "
-            "Return compact JSON with keys should_search (boolean) and search_query (string). "
-            "Set should_search to false for greetings, small talk, or questions answerable without the database."
-        )
-        response = llm.invoke(
-            [
-                SystemMessage(content=prompt),
-                HumanMessage(
-                    content=json.dumps(
-                        {
-                            "chat_mode": state["chat_mode"],
-                            "paper_title": state["paper_title"],
-                            "question": state["question"],
-                        },
-                        ensure_ascii=False,
-                    )
-                ),
-            ]
-        )
-        payload = self._safe_json_loads(response.content)
+            results = self.retrieval_service.retrieve(
+                query=query,
+                paper_id=state.get("paper_id"),
+                top_k=self.settings.default_top_k,
+            )
+            payload = {
+                "query": query,
+                "results": [
+                    {
+                        "paper_id": item.paper_id,
+                        "chunk_id": item.chunk_id,
+                        "section_title": item.section_title,
+                        "page_number": item.page_number,
+                        "score": item.score,
+                        "content": item.content,
+                    }
+                    for item in results
+                ],
+            }
+            return json.dumps(payload, ensure_ascii=False)
+
+        return [search_paper_context]
+
+    def _agent_step(self, state: AgentState) -> AgentState:
+        messages = state["messages"]
+        if self.settings.llm_backend == "mock":
+            return {"messages": [self._mock_agent_message(state)]}
+
+        llm = self._chat_model(temperature=0.2).bind_tools(self.tools)
+        system_prompt = self._load_system_prompt(state)
+        model_input = [SystemMessage(content=system_prompt)] + messages
+        response = llm.invoke(model_input)
+
+        if response.tool_calls and state.get("tool_iterations", 0) >= self.max_tool_iterations:
+            response = AIMessage(
+                content=(
+                    "I have already used the search tool several times and still do not have enough certainty. "
+                    "Please narrow the question or specify the paper you want me to focus on."
+                )
+            )
+        return {"messages": [response]}
+
+    def _run_tools(self, state: AgentState) -> AgentState:
+        tool_update = self.tool_node.invoke(state)
+        tool_messages = tool_update.get("messages", [])
+        latest_retrieval = self._extract_retrieval_results(tool_messages)
         return {
-            "should_search": bool(payload.get("should_search", True)),
-            "search_query": str(payload.get("search_query") or state["question"]),
+            "messages": tool_messages,
+            "latest_retrieval": latest_retrieval,
+            "tool_iterations": state.get("tool_iterations", 0) + 1,
         }
 
-    def _search(self, state: AgentState) -> AgentState:
-        results = self.retrieval_service.retrieve(
-            query=state.get("search_query") or state["question"],
-            paper_id=state["paper_id"],
-        )
-        return {"evidence": results}
+    def _route_after_agent(self, state: AgentState) -> str:
+        last_message = state["messages"][-1]
+        if isinstance(last_message, AIMessage) and last_message.tool_calls:
+            return "tools"
+        return "end"
 
-    def _answer(self, state: AgentState) -> AgentState:
-        evidence = state.get("evidence", [])
-        if self.settings.llm_backend == "mock":
-            answer = self._mock_answer(state, evidence)
-            return {"answer": answer}
+    def _prepare_session(
+        self,
+        requested_session_id: str | None,
+        requested_paper_id: str | None,
+        question: str,
+        style: str,
+    ) -> tuple[ChatSessionRecord, bool]:
+        session_id = requested_session_id or uuid4().hex
+        existing = self.chat_session_repository.get_session(session_id)
+        now = datetime.utcnow()
 
-        llm = self._chat_model(temperature=0.2)
-        evidence_text = "\n\n".join(
-            f"[{item.chunk_id}] section={item.section_title} page={item.page_number}\n{item.content}"
-            for item in evidence
-        )
-        if not evidence_text:
-            evidence_text = "No retrieval evidence used."
-        if state.get("chat_mode") == "paper":
-            system_prompt = (
-                "You explain papers clearly for beginners. "
-                "Use evidence when provided, cite chunk ids inline, and say you are unsure when evidence is missing."
+        if existing:
+            if existing.paper_id and requested_paper_id and existing.paper_id != requested_paper_id:
+                raise ValueError(
+                    f"Session {session_id} is already bound to paper {existing.paper_id}, "
+                    f"not {requested_paper_id}."
+                )
+            paper_id = existing.paper_id or requested_paper_id
+            resolved_style = existing.style if style == "beginner" else style
+            title = existing.title or question[:80]
+            updated = ChatSessionRecord(
+                session_id=session_id,
+                paper_id=paper_id,
+                title=title,
+                style=resolved_style,
+                created_at=existing.created_at,
+                updated_at=now,
             )
-        else:
-            system_prompt = (
-                "You are a helpful chat assistant. "
-                "If indexed paper evidence is provided, use it and cite chunk ids inline. "
-                "If no evidence is needed, answer naturally without pretending you searched."
-            )
-        user_prompt = json.dumps(
-            {
-                "chat_mode": state["chat_mode"],
-                "paper_title": state["paper_title"],
-                "style": state["style"],
-                "question": state["question"],
-                "evidence": evidence_text,
-            },
-            ensure_ascii=False,
-        )
-        response = llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)])
-        return {"answer": str(response.content)}
+            self.chat_session_repository.upsert_session(updated)
+            return updated, False
 
-    def _mock_answer(self, state: AgentState, evidence: list[RetrievalResult]) -> str:
-        if evidence:
-            bullet_lines = [
-                f"- 来自论文 {item.paper_id} / {item.section_title} (p.{item.page_number}, {item.chunk_id})：{item.content[:160]}"
-                for item in evidence[:3]
-            ]
-            return (
-                f"问题：{state['question']}\n"
-                f"这是一份面向初学者的解释。系统检索到了以下证据：\n"
-                + "\n".join(bullet_lines)
-                + "\n\n简要总结：论文的核心信息已经从这些片段中提取出来，你可以继续追问方法细节、实验设置或局限性。"
-            )
-        if state.get("chat_mode") == "general":
-            return (
-                f"问题：{state['question']}\n"
-                "当前没有检索数据库，因为这个问题更适合直接聊天回答。"
-                "如果你想让我结合已经导入的论文内容，请继续问更具体的问题。"
-            )
-        return (
-            f"问题：{state['question']}\n"
-            "当前没有调用检索工具，因此我先给出通用解释。"
-            "如果你需要论文中的具体实验数字、方法流程或结论依据，可以继续追问更细的问题。"
+        created = ChatSessionRecord(
+            session_id=session_id,
+            paper_id=requested_paper_id,
+            title=question[:80],
+            style=style,
+            created_at=now,
+            updated_at=now,
+        )
+        self.chat_session_repository.upsert_session(created)
+        return created, True
+
+    def _touch_session(self, session: ChatSessionRecord, paper_id: str | None, style: str) -> None:
+        updated = ChatSessionRecord(
+            session_id=session.session_id,
+            paper_id=paper_id,
+            title=session.title,
+            style=style,
+            created_at=session.created_at,
+            updated_at=datetime.utcnow(),
+        )
+        self.chat_session_repository.upsert_session(updated)
+
+    def _load_system_prompt(self, state: AgentState) -> str:
+        prompt_name = "agent_paper_system.txt" if state.get("chat_mode") == "paper" else "agent_general_system.txt"
+        return self.prompt_loader.load(
+            prompt_name,
+            style=state.get("style", "beginner"),
+            paper_title=state.get("paper_title", "Indexed paper database"),
+            paper_scope=state.get("paper_id") or "all indexed papers",
         )
 
-    def _stream_answer(self, answer: str) -> Iterable[AgentEvent]:
-        yield AgentEvent("status", "Generating final answer")
+    def _mock_agent_message(self, state: AgentState) -> AIMessage:
+        last_message = state["messages"][-1]
+        if isinstance(last_message, HumanMessage):
+            normalized = last_message.content.strip().lower()
+            greetings = {"hello", "hi", "hey", "你好", "您好"}
+            if normalized in greetings:
+                return AIMessage(
+                    content=(
+                        "Hello. I can chat normally, and if you ask about imported papers I can decide whether "
+                        "to search the paper database."
+                    )
+                )
+            should_search = any(
+                word in normalized
+                for word in ["method", "experiment", "result", "contribution", "limitation", "detail", "paper"]
+            )
+            if should_search:
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "search_paper_context",
+                            "args": {"query": last_message.content},
+                            "id": f"call_{uuid4().hex[:8]}",
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+            return AIMessage(
+                content=(
+                    "This looks like a general chat question, so I answered directly without searching the database. "
+                    "If you want evidence from imported papers, ask a more paper-specific question."
+                )
+            )
+
+        if isinstance(last_message, ToolMessage):
+            retrievals = self._extract_retrieval_results([last_message])
+            if retrievals:
+                bullet_lines = [
+                    f"- 来自论文 {item.paper_id} / {item.section_title} (p.{item.page_number}, {item.chunk_id})：{item.content[:160]}"
+                    for item in retrievals[:3]
+                ]
+                return AIMessage(
+                    content=(
+                        "我已经结合检索结果整理出答案：\n"
+                        + "\n".join(bullet_lines)
+                        + "\n\n如果你想继续深入，我可以继续围绕这些证据展开。"
+                    )
+                )
+            return AIMessage(
+                content=(
+                    "我尝试搜索了数据库，但没有找到足够相关的证据。"
+                    "你可以换一种问法，或者指定某篇论文再继续问。"
+                )
+            )
+
+        return AIMessage(content="I am ready to continue this session.")
+
+    def _extract_retrieval_results(self, tool_messages: list[BaseMessage]) -> list[RetrievalResult]:
+        retrievals: list[RetrievalResult] = []
+        for message in tool_messages:
+            if not isinstance(message, ToolMessage):
+                continue
+            try:
+                payload = json.loads(message.content)
+            except json.JSONDecodeError:
+                continue
+            for item in payload.get("results", []):
+                retrievals.append(
+                    RetrievalResult(
+                        paper_id=str(item["paper_id"]),
+                        chunk_id=str(item["chunk_id"]),
+                        content=str(item["content"]),
+                        section_title=str(item["section_title"]),
+                        page_number=int(item["page_number"]),
+                        score=float(item.get("score", 0.0)),
+                        source="hybrid",
+                    )
+                )
+        return retrievals
+
+    def _find_last_ai_without_tool_calls(self, messages: list[BaseMessage]) -> AIMessage | None:
+        for message in reversed(messages):
+            if isinstance(message, AIMessage) and not message.tool_calls:
+                return message
+        return None
+
+    def _stream_answer(self, answer: str, session_id: str) -> Iterator[AgentEvent]:
+        yield AgentEvent("status", "Generating final answer", {"session_id": session_id})
         for token in answer.split():
-            yield AgentEvent("final_answer_stream", token + " ")
-        yield AgentEvent("final_answer_done", "")
+            yield AgentEvent("final_answer_stream", token + " ", {"session_id": session_id})
+        yield AgentEvent("final_answer_done", "", {"session_id": session_id})
 
     def _chat_model(self, temperature: float) -> ChatOpenAI:
         return ChatOpenAI(
@@ -205,9 +380,3 @@ class PaperChatAgent:
             base_url=self.settings.llm_base_url,
             temperature=temperature,
         )
-
-    def _safe_json_loads(self, payload: str) -> dict:
-        try:
-            return json.loads(payload)
-        except json.JSONDecodeError:
-            return {"should_search": True, "search_query": payload}

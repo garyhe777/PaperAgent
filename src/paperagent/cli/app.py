@@ -56,20 +56,28 @@ def ingest(
 @chat_app.command("ask")
 def chat_ask(
     paper_id: str | None = typer.Option(None, help="Optional paper identifier"),
+    session_id: str | None = typer.Option(None, help="Optional chat session identifier"),
     question: str = typer.Option(..., help="Question to ask"),
     style: str = typer.Option("beginner", help="Answer style"),
 ) -> None:
     container = get_container()
-    for event in container.chat_agent.ask(paper_id=paper_id, question=question, style=style):
+    for event in container.chat_agent.ask(
+        paper_id=paper_id,
+        question=question,
+        style=style,
+        session_id=session_id,
+    ):
         render_event(event)
 
 
 @chat_app.command("interactive")
 def chat_interactive(
     paper_id: str | None = typer.Option(None, help="Optional paper identifier"),
+    session_id: str | None = typer.Option(None, help="Optional chat session identifier"),
     style: str = typer.Option("beginner", help="Answer style"),
 ) -> None:
     container = get_container()
+    current_session_id = session_id
     if paper_id:
         console.print(f"[bold green]Start chatting with paper {paper_id}[/bold green]")
     else:
@@ -78,7 +86,14 @@ def chat_interactive(
         question = typer.prompt("question", prompt_suffix=" > ")
         if question.strip().lower() in {"exit", "quit"}:
             break
-        for event in container.chat_agent.ask(paper_id=paper_id, question=question, style=style):
+        for event in container.chat_agent.ask(
+            paper_id=paper_id,
+            question=question,
+            style=style,
+            session_id=current_session_id,
+        ):
+            if event.payload.get("session_id"):
+                current_session_id = str(event.payload["session_id"])
             render_event(event)
 
 

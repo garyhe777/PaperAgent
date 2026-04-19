@@ -17,6 +17,7 @@ class IngestRequest(BaseModel):
 
 
 class ChatRequest(BaseModel):
+    session_id: str | None = None
     paper_id: str | None = None
     question: str
     style: str = "beginner"
@@ -108,6 +109,7 @@ def create_app(container) -> FastAPI:
     def chat_stream(request: ChatRequest) -> StreamingResponse:
         def event_stream():
             for event in container.chat_agent.ask(
+                session_id=request.session_id,
                 paper_id=request.paper_id,
                 question=request.question,
                 style=request.style,

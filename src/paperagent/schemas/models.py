@@ -52,6 +52,26 @@ class AgentEvent:
 
 
 @dataclass(slots=True)
+class ChatSessionRecord:
+    session_id: str
+    paper_id: str | None
+    title: str
+    style: str
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(slots=True)
+class ChatMessageRecord:
+    message_id: int
+    session_id: str
+    message_type: str
+    content: str
+    raw_json: str
+    created_at: datetime
+
+
+@dataclass(slots=True)
 class SlideOutline:
     title: str
     bullets: list[str]
