@@ -7,6 +7,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from paperagent.schemas.models import ChunkRecord, PaperProfileRecord, PaperRecord
 from paperagent.services import ServiceContainer
 from paperagent.web.api import create_app
 
@@ -57,6 +58,95 @@ def test_general_chat_can_search_database_when_needed(container: ServiceContaine
     event_types = [event.event_type for event in events]
     assert result["paper_id"]
     assert "rag_hit" in event_types
+
+
+def test_general_chat_can_search_catalog_without_chunk_rag(container: ServiceContainer):
+    _seed_catalog_paper(
+        container,
+        paper_id="tag-wm",
+        title="TAG-WM: Tamper-Aware Generative Image Watermarking",
+        abstract="A watermarking paper for tamper-aware generation.",
+        summary="A paper profile for TAG-WM.",
+        keywords=["watermark", "tamper-aware"],
+        chunks=[],
+    )
+    events = list(
+        container.chat_agent.ask(
+            paper_id=None,
+            question="有哪些 watermark 相关论文？",
+            style="beginner",
+        )
+    )
+    event_types = [event.event_type for event in events]
+    tool_names = [event.payload.get("tool_name") for event in events if event.event_type == "tool_called"]
+    assert "search_papers" in tool_names
+    assert "catalog_hit" in event_types
+    assert "rag_hit" not in event_types
+
+
+def test_general_chat_can_search_catalog_then_scoped_context(container: ServiceContainer):
+    _seed_catalog_paper(
+        container,
+        paper_id="tag-wm",
+        title="TAG-WM: Tamper-Aware Generative Image Watermarking",
+        abstract="A watermarking paper for tamper-aware generation.",
+        summary="A paper profile for TAG-WM.",
+        keywords=["watermark", "tamper-aware"],
+        chunks=[
+            ChunkRecord(
+                paper_id="tag-wm",
+                chunk_id="tag-wm-0001",
+                section_title="Method",
+                page_number=1,
+                content="TAG-WM uses diffusion inversion sensitivity to detect tampering in generated images.",
+                token_count=12,
+            )
+        ],
+    )
+    events = list(
+        container.chat_agent.ask(
+            paper_id=None,
+            question="TAG-WM 的方法是什么？",
+            style="beginner",
+        )
+    )
+    tool_names = [event.payload.get("tool_name") for event in events if event.event_type == "tool_called"]
+    event_types = [event.event_type for event in events]
+    assert "search_papers" in tool_names
+    assert "search_paper_context" in tool_names
+    assert "catalog_hit" in event_types
+    assert "rag_hit" in event_types
+
+
+def test_scoped_paper_chat_skips_catalog_lookup(container: ServiceContainer):
+    _seed_catalog_paper(
+        container,
+        paper_id="tag-wm",
+        title="TAG-WM: Tamper-Aware Generative Image Watermarking",
+        abstract="A watermarking paper for tamper-aware generation.",
+        summary="A paper profile for TAG-WM.",
+        keywords=["watermark", "tamper-aware"],
+        chunks=[
+            ChunkRecord(
+                paper_id="tag-wm",
+                chunk_id="tag-wm-0001",
+                section_title="Method",
+                page_number=1,
+                content="TAG-WM uses diffusion inversion sensitivity to detect tampering in generated images.",
+                token_count=12,
+            )
+        ],
+    )
+    events = list(
+        container.chat_agent.ask(
+            paper_id="tag-wm",
+            question="Explain the method",
+            style="beginner",
+        )
+    )
+    tool_names = [event.payload.get("tool_name") for event in events if event.event_type == "tool_called"]
+    assert "search_paper_context" in tool_names
+    assert "search_papers" not in tool_names
 
 
 def test_session_context_is_persisted_across_turns(container: ServiceContainer, sample_pdf: Path):
@@ -130,3 +220,45 @@ def test_ingest_url_and_api_endpoints(container: ServiceContainer, sample_pdf: P
     finally:
         server.shutdown()
         server.server_close()
+
+
+def _seed_catalog_paper(
+    container: ServiceContainer,
+    paper_id: str,
+    title: str,
+    abstract: str,
+    summary: str,
+    keywords: list[str],
+    chunks: list[ChunkRecord],
+) -> None:
+    from datetime import datetime
+
+    now = datetime.utcnow()
+    container.paper_repository.upsert_paper(
+        PaperRecord(
+            paper_id=paper_id,
+            title=title,
+            source_type="pdf",
+            source_value=f"{paper_id}.pdf",
+            pdf_path=f"{paper_id}.pdf",
+            md_path=f"{paper_id}.md",
+            ingest_status="completed",
+            error_message=None,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    container.paper_repository.upsert_profile(
+        PaperProfileRecord(
+            paper_id=paper_id,
+            abstract_text=abstract,
+            short_summary=summary,
+            keywords=keywords,
+            profile_status="completed",
+            profile_error=None,
+            profile_updated_at=now,
+        )
+    )
+    if chunks:
+        container.chunk_repository.replace_chunks(paper_id, chunks)
+        container.retrieval_service.index_paper(paper_id, chunks)

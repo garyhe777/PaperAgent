@@ -13,7 +13,7 @@ from langgraph.graph.message import add_messages
 
 from paperagent.agent.prompts import PromptLoader
 from paperagent.config import Settings
-from paperagent.schemas.models import AgentEvent, ChatSessionRecord, RetrievalResult
+from paperagent.schemas.models import AgentEvent, ChatSessionRecord, PaperCatalogResult, RetrievalResult
 from paperagent.storage.repositories import ChatMessageRepository, ChatSessionRepository, PaperRepository
 
 
@@ -25,6 +25,7 @@ class AgentState(TypedDict, total=False):
     style: str
     chat_mode: str
     latest_retrieval: list[RetrievalResult]
+    latest_paper_catalog: list[PaperCatalogResult]
     tool_iterations: int
 
 
@@ -93,6 +94,7 @@ class PaperChatAgent:
             "chat_mode": chat_mode,
             "messages": initial_messages,
             "latest_retrieval": [],
+            "latest_paper_catalog": [],
             "tool_iterations": 0,
         }
         final_state: AgentState | None = None
@@ -157,11 +159,21 @@ class PaperChatAgent:
 
     def _build_tools(self):
         @tool
-        def search_paper_context(query: str) -> str:
+        def search_paper_context(query: str, paper_id: str | None = None) -> str:
             """Search imported paper chunks and return the most relevant evidence."""
             return "This tool is executed by the LangGraph tools node."
 
-        return [search_paper_context]
+        @tool
+        def search_papers(query: str) -> str:
+            """Search the indexed paper catalog and return relevant papers."""
+            return "This tool is executed by the LangGraph tools node."
+
+        @tool
+        def get_paper_profile(paper_id: str) -> str:
+            """Return the cached abstract summary and keywords for one indexed paper."""
+            return "This tool is executed by the LangGraph tools node."
+
+        return [search_paper_context, search_papers, get_paper_profile]
 
     def _agent_step(self, state: AgentState) -> AgentState:
         messages = state["messages"]
@@ -185,46 +197,74 @@ class PaperChatAgent:
     def _run_tools(self, state: AgentState) -> AgentState:
         tool_messages: list[ToolMessage] = []
         latest_retrieval: list[RetrievalResult] = []
+        latest_paper_catalog: list[PaperCatalogResult] = []
         last_message = state["messages"][-1]
         if not isinstance(last_message, AIMessage):
             return {
                 "messages": [],
                 "latest_retrieval": [],
+                "latest_paper_catalog": [],
                 "tool_iterations": state.get("tool_iterations", 0) + 1,
             }
 
         for tool_call in last_message.tool_calls:
             tool_name = str(tool_call["name"])
-            if tool_name != "search_paper_context":
+            if tool_name == "search_paper_context":
+                query = str(tool_call.get("args", {}).get("query", ""))
+                requested_paper_id = tool_call.get("args", {}).get("paper_id") or state.get("paper_id")
+                content, retrievals = self._search_paper_context(
+                    query=query,
+                    paper_id=str(requested_paper_id) if requested_paper_id else None,
+                )
+                latest_retrieval.extend(retrievals)
                 tool_messages.append(
                     ToolMessage(
-                        content=json.dumps(
-                            {
-                                "error": f"Unsupported tool: {tool_name}",
-                                "results": [],
-                            },
-                            ensure_ascii=False,
-                        ),
+                        content=content,
                         tool_call_id=str(tool_call["id"]),
                     )
                 )
                 continue
 
-            query = str(tool_call.get("args", {}).get("query", ""))
-            content, retrievals = self._search_paper_context(
-                query=query,
-                paper_id=state.get("paper_id"),
-            )
-            latest_retrieval.extend(retrievals)
+            if tool_name == "search_papers":
+                query = str(tool_call.get("args", {}).get("query", ""))
+                content, catalog_hits = self._search_papers(query=query)
+                latest_paper_catalog.extend(catalog_hits)
+                tool_messages.append(
+                    ToolMessage(
+                        content=content,
+                        tool_call_id=str(tool_call["id"]),
+                    )
+                )
+                continue
+
+            if tool_name == "get_paper_profile":
+                requested_paper_id = str(tool_call.get("args", {}).get("paper_id", "")).strip()
+                content = self._get_paper_profile(requested_paper_id)
+                tool_messages.append(
+                    ToolMessage(
+                        content=content,
+                        tool_call_id=str(tool_call["id"]),
+                    )
+                )
+                continue
+
             tool_messages.append(
                 ToolMessage(
-                    content=content,
+                    content=json.dumps(
+                        {
+                            "tool_name": tool_name,
+                            "error": f"Unsupported tool: {tool_name}",
+                            "results": [],
+                        },
+                        ensure_ascii=False,
+                    ),
                     tool_call_id=str(tool_call["id"]),
                 )
             )
         return {
             "messages": tool_messages,
             "latest_retrieval": latest_retrieval,
+            "latest_paper_catalog": latest_paper_catalog,
             "tool_iterations": state.get("tool_iterations", 0) + 1,
         }
 
@@ -308,17 +348,76 @@ class PaperChatAgent:
                         "to search the paper database."
                     )
                 )
-            should_search = any(
-                word in normalized
-                for word in ["method", "experiment", "result", "contribution", "limitation", "detail", "paper"]
+            should_search_catalog = (
+                state.get("chat_mode") == "general"
+                and any(
+                    phrase in normalized
+                    for phrase in [
+                        "which paper",
+                        "what papers",
+                        "papers about",
+                        "related papers",
+                        "有哪些论文",
+                        "哪些论文",
+                        "什么论文",
+                    ]
+                )
             )
-            if should_search:
+            if state.get("chat_mode") == "general" and not should_search_catalog:
+                should_search_catalog = (
+                    "论文" in normalized
+                    and any(token in normalized for token in ["哪些", "哪篇", "什么", "watermark", "related"])
+                )
+            if should_search_catalog:
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "search_papers",
+                            "args": {"query": last_message.content},
+                            "id": f"call_{uuid4().hex[:8]}",
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+
+            should_search_context = any(
+                word in normalized
+                for word in [
+                    "method",
+                    "experiment",
+                    "result",
+                    "contribution",
+                    "limitation",
+                    "detail",
+                    "paper",
+                    "方法",
+                    "实验",
+                    "结果",
+                    "贡献",
+                    "局限",
+                    "细节",
+                ]
+            )
+            if should_search_context:
+                if state.get("chat_mode") == "general" and any(token in normalized for token in ["tag-wm", "roar", "seal"]):
+                    return AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "search_papers",
+                                "args": {"query": last_message.content},
+                                "id": f"call_{uuid4().hex[:8]}",
+                                "type": "tool_call",
+                            }
+                        ],
+                    )
                 return AIMessage(
                     content="",
                     tool_calls=[
                         {
                             "name": "search_paper_context",
-                            "args": {"query": last_message.content},
+                            "args": {"query": last_message.content, "paper_id": state.get("paper_id")},
                             "id": f"call_{uuid4().hex[:8]}",
                             "type": "tool_call",
                         }
@@ -332,6 +431,43 @@ class PaperChatAgent:
             )
 
         if isinstance(last_message, ToolMessage):
+            payload = self._safe_tool_payload(last_message.content)
+            tool_name = str(payload.get("tool_name", ""))
+            if tool_name == "search_papers":
+                papers = payload.get("results", [])
+                if len(papers) == 1:
+                    original_question = ""
+                    for message in reversed(state["messages"]):
+                        if isinstance(message, HumanMessage):
+                            original_question = str(message.content)
+                            break
+                    return AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "search_paper_context",
+                                "args": {
+                                    "query": original_question,
+                                    "paper_id": papers[0]["paper_id"],
+                                },
+                                "id": f"call_{uuid4().hex[:8]}",
+                                "type": "tool_call",
+                            }
+                        ],
+                    )
+                if papers:
+                    bullet_lines = [
+                        f"- {item['paper_id']}: {item['title']} | {item.get('short_summary', '')}".strip()
+                        for item in papers[:5]
+                    ]
+                    return AIMessage(
+                        content=(
+                            "我先在论文目录里找到了这些相关论文：\n"
+                            + "\n".join(bullet_lines)
+                            + "\n\n如果你想继续，我可以进一步讲其中某一篇的方法、实验或结论。"
+                        )
+                    )
+
             retrievals = self._extract_retrieval_results([last_message])
             if retrievals:
                 bullet_lines = [
@@ -359,11 +495,10 @@ class PaperChatAgent:
         for message in tool_messages:
             if not isinstance(message, ToolMessage):
                 continue
-            try:
-                payload = json.loads(message.content)
-            except json.JSONDecodeError:
-                continue
+            payload = self._safe_tool_payload(message.content)
             for item in payload.get("results", []):
+                if "chunk_id" not in item:
+                    continue
                 retrievals.append(
                     RetrievalResult(
                         paper_id=str(item["paper_id"]),
@@ -388,6 +523,7 @@ class PaperChatAgent:
             top_k=self.settings.default_top_k,
         )
         payload = {
+            "tool_name": "search_paper_context",
             "query": query,
             "results": [
                 {
@@ -402,6 +538,38 @@ class PaperChatAgent:
             ],
         }
         return json.dumps(payload, ensure_ascii=False), results
+
+    def _search_papers(self, query: str) -> tuple[str, list[PaperCatalogResult]]:
+        results = self.paper_catalog_service.search_papers(query, top_k=5) if self.paper_catalog_service else []
+        payload = {
+            "tool_name": "search_papers",
+            "query": query,
+            "results": [
+                {
+                    "paper_id": item.paper_id,
+                    "title": item.title,
+                    "short_summary": item.short_summary,
+                    "keywords": item.keywords,
+                    "score": item.score,
+                }
+                for item in results
+            ],
+        }
+        return json.dumps(payload, ensure_ascii=False), results
+
+    def _get_paper_profile(self, paper_id: str) -> str:
+        profile = self.paper_repository.get_profile(paper_id)
+        paper = self.paper_repository.get_paper(paper_id)
+        payload = {
+            "tool_name": "get_paper_profile",
+            "paper_id": paper_id,
+            "title": paper.title if paper else "",
+            "abstract_text": profile.abstract_text if profile else "",
+            "short_summary": profile.short_summary if profile else "",
+            "keywords": profile.keywords if profile else [],
+            "profile_status": profile.profile_status if profile else "missing",
+        }
+        return json.dumps(payload, ensure_ascii=False)
 
     def _find_last_ai_without_tool_calls(self, messages: list[BaseMessage]) -> AIMessage | None:
         for message in reversed(messages):
@@ -452,6 +620,24 @@ class PaperChatAgent:
                         )
 
             if node_name == "tools":
+                catalog_hits = update.get("latest_paper_catalog", [])
+                if catalog_hits:
+                    yield AgentEvent(
+                        "catalog_hit",
+                        f"Retrieved {len(catalog_hits)} relevant papers.",
+                        {
+                            "papers": [
+                                {
+                                    "paper_id": item.paper_id,
+                                    "title": item.title,
+                                    "short_summary": item.short_summary,
+                                    "keywords": item.keywords,
+                                }
+                                for item in catalog_hits
+                            ],
+                            "session_id": session_id,
+                        },
+                    )
                 retrievals = update.get("latest_retrieval", [])
                 if not retrievals:
                     continue
@@ -478,3 +664,9 @@ class PaperChatAgent:
         if isinstance(content, str):
             return content
         return ""
+
+    def _safe_tool_payload(self, text: str) -> dict:
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return {}
